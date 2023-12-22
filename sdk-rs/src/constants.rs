@@ -41,6 +41,7 @@ pub fn derive_spot_market_account(market_index: u16) -> Pubkey {
 pub fn init_markets(context: Context, mut spot: Vec<SpotMarket>, mut perp: Vec<PerpMarket>) {
     spot.sort_by(|a, b| a.market_index.cmp(&b.market_index));
     perp.sort_by(|a, b| a.market_index.cmp(&b.market_index));
+    // other code relies on aligned indexes for fast lookups
     assert!(
         spot.iter()
             .enumerate()
