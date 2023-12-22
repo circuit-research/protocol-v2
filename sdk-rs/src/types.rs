@@ -196,6 +196,10 @@ pub enum SdkError {
     InvalidBase58,
     #[error("insufficient SOL balance for fees")]
     OutOfSOL,
+    #[error("WebSocket connection failed")]
+    ConnectionError,
+    #[error("Couldn't subscribe to orderbook")]
+    SubscriptionFailure,
 }
 
 impl SdkError {

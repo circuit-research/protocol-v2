@@ -37,8 +37,14 @@ pub fn derive_spot_market_account(market_index: u16) -> Pubkey {
     account
 }
 
+/// Common trait shared by both `SpotMarketConfig` and `PerpMarketConfig` for elegant operations
+pub trait MarketConfig<'a> {
+    fn market_type(&self) -> &str;
+    fn symbol(&self) -> &'a str;
+}
+
 /// Metadata of deployed spot market
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct SpotMarketConfig<'a> {
     pub symbol: &'a str,
     pub market_index: u16,
@@ -62,8 +68,18 @@ impl<'a> SpotMarketConfig<'a> {
     }
 }
 
+impl<'a> MarketConfig<'a> for SpotMarketConfig<'a> {
+    fn market_type(&self) -> &str {
+        "perp"
+    }
+
+    fn symbol(&self) -> &'a str {
+        &self.symbol
+    }
+}
+
 /// Metadata of deployed perp market
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct PerpMarketConfig<'a> {
     pub symbol: &'a str,
     pub base_asset_symbol: &'a str,
@@ -85,6 +101,16 @@ impl<'a> PerpMarketConfig<'a> {
             oracle,
             account,
         }
+    }
+}
+
+impl<'a> MarketConfig<'a> for PerpMarketConfig<'a> {
+    fn market_type(&self) -> &str {
+        "perp"
+    }
+
+    fn symbol(&self) -> &'a str {
+        &self.symbol
     }
 }
 
