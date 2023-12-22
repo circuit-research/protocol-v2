@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc::{channel, Receiver};
 use tokio::time::{Duration as TokioDuration, Instant};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use crate::{types::{MarketId, SdkError}, constants::{perp_market_config_by_index, spot_market_config_by_index}, Context, utils::to_ws_json, DriftClient, RpcAccountProvider};
+use crate::{types::{MarketId, SdkError}, constants::{perp_market_config_by_index, spot_market_config_by_index}, Context, utils::to_ws_json};
 
 pub type L2OrderbookStream = RxStream<Result<L2Orderbook, SdkError>>;
 
@@ -132,14 +132,12 @@ impl DLOBClient {
             MarketType::Perp => {
                 if let Some(perp_market_config) = perp_market_config_by_index(self.context, market.index) {
                     let market_subscription_message = to_ws_json(perp_market_config);
-                    println!("{}", market_subscription_message);
                     ws_stream.send(Message::Text(market_subscription_message)).await.map_err(|_| SdkError::SubscriptionFailure).unwrap();
                 }
             },
             MarketType::Spot => {
                 if let Some(spot_market_config) = spot_market_config_by_index(self.context, market.index) {
                     let market_subscription_message = to_ws_json(spot_market_config);
-                    println!("{}", market_subscription_message);
                     ws_stream.send(Message::Text(market_subscription_message)).await.map_err(|_| SdkError::SubscriptionFailure).unwrap();
                 }
             }
@@ -149,7 +147,6 @@ impl DLOBClient {
         let mut last_heartbeat = Instant::now();
         tokio::spawn(async move {
             while let Some(message) = ws_stream.next().await {
-                last_heartbeat = Instant::now();
                 if last_heartbeat.elapsed() > heartbeat_interval {
                     eprintln!("Heartbeat missed!");
                     let _ = ws_stream.close(None).await;
@@ -262,7 +259,8 @@ where
 #[cfg(test)]
 mod tests {
     use futures_util::StreamExt;
-
+    use crate::DriftClient;
+    use crate::RpcAccountProvider;
     use super::*;
 
     // this is my (frank) free helius endpoint
