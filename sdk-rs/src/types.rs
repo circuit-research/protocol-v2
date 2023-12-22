@@ -1,6 +1,5 @@
 use std::cmp::Ordering;
 
-use drift_program::error::ErrorCode;
 // re-export types in public API
 pub use drift_program::{
     controller::position::PositionDirection,
@@ -10,6 +9,7 @@ pub use drift_program::{
         user::{MarketType, Order, OrderType, PerpPosition, SpotPosition},
     },
 };
+use drift_program::{error::ErrorCode, state::perp_market::PerpMarket};
 use solana_sdk::{
     instruction::{AccountMeta, InstructionError},
     pubkey::Pubkey,
@@ -284,6 +284,40 @@ impl From<RemainingAccount> for AccountMeta {
             is_writable,
             is_signer: false,
         }
+    }
+}
+
+/// Provide market precision information
+pub trait MarketPrecision {
+    // prices must be a multiple of this
+    fn price_tick(&self) -> u64;
+    // order sizes must be a multiple of this
+    fn quantity_tick(&self) -> u64;
+    /// smallest order size
+    fn min_order_size(&self) -> u64;
+}
+
+impl MarketPrecision for SpotMarket {
+    fn min_order_size(&self) -> u64 {
+        self.min_order_size
+    }
+    fn price_tick(&self) -> u64 {
+        self.order_tick_size
+    }
+    fn quantity_tick(&self) -> u64 {
+        self.order_step_size
+    }
+}
+
+impl MarketPrecision for PerpMarket {
+    fn min_order_size(&self) -> u64 {
+        self.amm.min_order_size
+    }
+    fn price_tick(&self) -> u64 {
+        self.amm.order_tick_size
+    }
+    fn quantity_tick(&self) -> u64 {
+        self.amm.order_step_size
     }
 }
 
