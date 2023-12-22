@@ -6,6 +6,7 @@ pub use drift_program::{
     controller::position::PositionDirection,
     state::{
         order_params::{ModifyOrderParams, OrderParams, PostOnlyParam},
+        perp_market::PerpMarket,
         spot_market::SpotMarket,
         user::{MarketType, Order, OrderType, PerpPosition, SpotPosition},
     },
@@ -45,28 +46,25 @@ impl MarketId {
     ///
     /// Returns an error if symbol and context do not map to a known market
     pub fn lookup(context: Context, symbol: &str) -> Result<Self, ()> {
-        let mut parts = symbol.split('-');
-        match (parts.next(), parts.next()) {
-            (Some(base), None) => {
-                let markets = spot_market_configs(context);
-                if let Some(market) = markets.iter().find(|m| m.symbol.eq_ignore_ascii_case(base)) {
-                    return Ok(MarketId::spot(market.market_index));
-                }
+        if symbol.contains('-') {
+            let markets = perp_market_configs(context);
+            if let Some(market) = markets.iter().find(|m| {
+                unsafe { core::str::from_utf8_unchecked(&m.name) }
+                    .trim_end()
+                    .eq_ignore_ascii_case(symbol)
+            }) {
+                return Ok(MarketId::perp(market.market_index));
             }
-            (Some(base), Some(perp)) => {
-                if perp.eq_ignore_ascii_case("perp") {
-                    let markets = perp_market_configs(context);
-                    if let Some(market) = markets
-                        .iter()
-                        .find(|m| m.base_asset_symbol.eq_ignore_ascii_case(base))
-                    {
-                        return Ok(MarketId::perp(market.market_index));
-                    }
-                }
+        } else {
+            let markets = spot_market_configs(context);
+            if let Some(market) = markets.iter().find(|m| {
+                unsafe { core::str::from_utf8_unchecked(&m.name) }
+                    .trim_end()
+                    .eq_ignore_ascii_case(symbol)
+            }) {
+                return Ok(MarketId::spot(market.market_index));
             }
-            _ => (),
         }
-
         Err(())
     }
     /// Id of a perp market
@@ -186,6 +184,8 @@ pub enum SdkError {
     Rpc(#[from] solana_client::client_error::ClientError),
     #[error("{0}")]
     Ws(#[from] solana_client::nonblocking::pubsub_client::PubsubClientError),
+    #[error("{0}")]
+    Anchor(#[from] anchor_lang::error::Error),
     #[error("error while deserializing")]
     Deserializing,
     #[error("invalid drift account")]
@@ -289,6 +289,40 @@ impl From<RemainingAccount> for AccountMeta {
             is_writable,
             is_signer: false,
         }
+    }
+}
+
+/// Provide market precision information
+pub trait MarketPrecision {
+    // prices must be a multiple of this
+    fn price_tick(&self) -> u64;
+    // order sizes must be a multiple of this
+    fn quantity_tick(&self) -> u64;
+    /// smallest order size
+    fn min_order_size(&self) -> u64;
+}
+
+impl MarketPrecision for SpotMarket {
+    fn min_order_size(&self) -> u64 {
+        self.min_order_size
+    }
+    fn price_tick(&self) -> u64 {
+        self.order_tick_size
+    }
+    fn quantity_tick(&self) -> u64 {
+        self.order_step_size
+    }
+}
+
+impl MarketPrecision for PerpMarket {
+    fn min_order_size(&self) -> u64 {
+        self.amm.min_order_size
+    }
+    fn price_tick(&self) -> u64 {
+        self.amm.order_tick_size
+    }
+    fn quantity_tick(&self) -> u64 {
+        self.amm.order_step_size
     }
 }
 

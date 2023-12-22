@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc::{channel, Receiver};
 use tokio::time::{Duration as TokioDuration, Instant};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use crate::{types::{MarketId, SdkError}, constants::{perp_market_config_by_index, spot_market_config_by_index}, Context, utils::to_ws_json};
+use crate::{types::{MarketId, SdkError}, constants::{perp_market_config_by_index, spot_market_config_by_index}, Context, utils::to_ws_json, DriftClient, RpcAccountProvider};
 
 pub type L2OrderbookStream = RxStream<Result<L2Orderbook, SdkError>>;
 
@@ -29,6 +29,7 @@ pub struct DLOBClient {
 impl DLOBClient {
     pub fn new(url: &str, context: Context) -> Self {
         let url = url.trim_end_matches('/');
+
         Self {
             context,
             url: url.to_string(),
@@ -71,7 +72,11 @@ impl DLOBClient {
     }
 
     /// Subscribe to a DLOB L2 book for `market`
-    pub fn subscribe_l2_book(&self, market: MarketId, interval_s: Option<u64>) -> L2OrderbookStream {
+    pub fn subscribe_l2_book(
+        &self,
+        market: MarketId,
+        interval_s: Option<u64>,
+    ) -> L2OrderbookStream {
         let mut interval = tokio::time::interval(Duration::from_secs(interval_s.unwrap_or(1)));
         let (tx, rx) = channel(16);
         tokio::spawn({
@@ -90,11 +95,15 @@ impl DLOBClient {
         RxStream(rx)
     }
 
-    /// Subscribe to a DLOB L3 book for `market`
-    pub fn subscribe_l3_book(&self, market: MarketId, interval_s: Option<u64>) -> L3OrderbookStream {
+    // Subscribe to a DLOB L3 book for `market`
+    pub fn subscribe_l3_book(
+        &self,
+        market: MarketId,
+        interval_s: Option<u64>,
+    ) -> L3OrderbookStream {
         let mut interval = tokio::time::interval(Duration::from_secs(interval_s.unwrap_or(1)));
         let (tx, rx) = channel(16);
-        tokio::spawn( {
+        tokio::spawn({
             let client = self.clone();
             async move {
                 loop {
@@ -123,12 +132,14 @@ impl DLOBClient {
             MarketType::Perp => {
                 if let Some(perp_market_config) = perp_market_config_by_index(self.context, market.index) {
                     let market_subscription_message = to_ws_json(perp_market_config);
+                    println!("{}", market_subscription_message);
                     ws_stream.send(Message::Text(market_subscription_message)).await.map_err(|_| SdkError::SubscriptionFailure).unwrap();
                 }
             },
             MarketType::Spot => {
                 if let Some(spot_market_config) = spot_market_config_by_index(self.context, market.index) {
                     let market_subscription_message = to_ws_json(spot_market_config);
+                    println!("{}", market_subscription_message);
                     ws_stream.send(Message::Text(market_subscription_message)).await.map_err(|_| SdkError::SubscriptionFailure).unwrap();
                 }
             }
@@ -138,7 +149,7 @@ impl DLOBClient {
         let mut last_heartbeat = Instant::now();
         tokio::spawn(async move {
             while let Some(message) = ws_stream.next().await {
-
+                last_heartbeat = Instant::now();
                 if last_heartbeat.elapsed() > heartbeat_interval {
                     eprintln!("Heartbeat missed!");
                     let _ = ws_stream.close(None).await;
@@ -218,7 +229,7 @@ pub struct L3Orderbook {
     pub bids: Vec<L3Level>,
     /// sorted asks, lowest first
     pub asks: Vec<L3Level>,
-    pub slot: u64
+    pub slot: u64,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -237,7 +248,7 @@ pub struct L3Level {
     pub size: u64,
     pub maker: String,
     #[serde(rename = "orderId")]
-    pub order_id: u64
+    pub order_id: u64,
 }
 
 fn parse_int_str<'de, D>(deserializer: D) -> Result<u64, D::Error>
@@ -253,6 +264,9 @@ mod tests {
     use futures_util::StreamExt;
 
     use super::*;
+
+    // this is my (frank) free helius endpoint
+    const MAINNET_ENDPOINT: &str = "https://mainnet.helius-rpc.com/?api-key=3a1ca16d-e181-4755-9fe7-eac27579b48c";
 
     #[tokio::test]
     async fn pull_l2_book() {
@@ -298,6 +312,13 @@ mod tests {
 
     #[tokio::test]
     async fn subscribe_ws() {
+        let _ = DriftClient::new(
+            Context::MainNet,
+            MAINNET_ENDPOINT,
+            RpcAccountProvider::new(MAINNET_ENDPOINT),
+        )
+        .await
+        .unwrap();
         let url = "https://dlob.drift.trade";
         let client = DLOBClient::new(url, Context::MainNet);
         let market = MarketId::perp(0);
