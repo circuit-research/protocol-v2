@@ -52,7 +52,7 @@ pub fn http_to_ws(url: &str) -> Result<String, &'static str> {
     Ok(format!("{}/ws", base_url.trim_end_matches('/')))
 }
 
-pub fn to_ws_json(config: &dyn MarketConfig) -> String {
+pub fn to_ws_json(config: &impl MarketConfig) -> String {
     json!({
         "type": "subscribe",
         "marketType": config.market_type(),

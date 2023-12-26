@@ -3,6 +3,7 @@ use std::{task::Poll, time::Duration};
 
 use drift_program::state::user::MarketType;
 use futures_util::{SinkExt, Stream, StreamExt};
+use log::{error, info};
 use reqwest::Client;
 use serde::{
     de::{self},
@@ -12,7 +13,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc::{channel, Receiver};
 use tokio::time::{Duration as TokioDuration, Instant};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use crate::{types::{MarketId, SdkError}, constants::{perp_market_config_by_index, spot_market_config_by_index}, Context, utils::to_ws_json};
+use crate::{types::{MarketId, SdkError, SdkResult}, constants::{perp_market_config_by_index, spot_market_config_by_index}, Context, utils::to_ws_json};
 
 pub type L2OrderbookStream = RxStream<Result<L2Orderbook, SdkError>>;
 
@@ -120,25 +121,29 @@ impl DLOBClient {
     }
 
     /// Subscribe to an orderbook via WebSocket.
-    pub async fn subscribe_ws(&self, market: MarketId) -> L2OrderbookStream {
+    /// You MUST have a Drift Client initialized to use this fn.
+    pub async fn subscribe_ws(&self, market: MarketId) -> SdkResult<L2OrderbookStream> {
+        env_logger::init();
         // This unwrap should never panic
         let ws_url = crate::utils::http_to_ws(&self.url).unwrap();
-        let (mut ws_stream, _) = connect_async(ws_url).await.unwrap();
+        let (mut ws_stream, _) = connect_async(ws_url).await?;
 
         // Setup channel for L2OrderbookStream
-        let (tx, rx) = channel::<Result<L2Orderbook, SdkError>>(16);
+        let (tx, rx) = channel::<SdkResult<L2Orderbook>>(16);
 
         match market.kind {
             MarketType::Perp => {
                 if let Some(perp_market_config) = perp_market_config_by_index(self.context, market.index) {
                     let market_subscription_message = to_ws_json(perp_market_config);
-                    ws_stream.send(Message::Text(market_subscription_message)).await.map_err(|_| SdkError::SubscriptionFailure).unwrap();
+                    ws_stream.send(Message::Text(market_subscription_message)).await
+                    .map_err(crate::types::SinkError)?;
                 }
             },
             MarketType::Spot => {
                 if let Some(spot_market_config) = spot_market_config_by_index(self.context, market.index) {
                     let market_subscription_message = to_ws_json(spot_market_config);
-                    ws_stream.send(Message::Text(market_subscription_message)).await.map_err(|_| SdkError::SubscriptionFailure).unwrap();
+                    ws_stream.send(Message::Text(market_subscription_message)).await
+                    .map_err(crate::types::SinkError)?;
                 }
             }
         }
@@ -148,8 +153,9 @@ impl DLOBClient {
         tokio::spawn(async move {
             while let Some(message) = ws_stream.next().await {
                 if last_heartbeat.elapsed() > heartbeat_interval {
-                    eprintln!("Heartbeat missed!");
+                    error!("Heartbeat missed!");
                     let _ = ws_stream.close(None).await;
+                    let _ = tx.send(Err(SdkError::MissedHeartbeat)).await;
                     break;              
                 }
 
@@ -158,11 +164,14 @@ impl DLOBClient {
                         let value: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!({}));
                         
                         if value.get("channel").and_then(Value::as_str) == Some("heartbeat") {
-                            println!("Received heartbeat");
+                            info!("Received heartbeat");
                             last_heartbeat = Instant::now();
                         } 
                         else if let Some(channel) = value.get("channel").and_then(Value::as_str) {
                             if channel.contains("orderbook") {
+                                // This unwraps because if we get bad data, we want to panic.
+                                // There's nothing a user can do about it if dlob server fmt changes, etc.
+                                // So it's best to panic.
                                 let orderbook_data = value.get("data").and_then(Value::as_str).unwrap();
                                 match serde_json::from_str::<L2Orderbook>(&orderbook_data) {
                                     Ok(orderbook) => {
@@ -179,7 +188,7 @@ impl DLOBClient {
                     },
                     Ok(Message::Close(_)) => break, // Handle WebSocket close
                     Err(_) => {
-                        let _ = tx.send(Err(SdkError::SubscriptionFailure)).await;
+                        let _ = tx.send(Err(SdkError::WebsocketError)).await;
                         break;
                     },
                     _ => {} // Handle other message types if needed
@@ -188,7 +197,7 @@ impl DLOBClient {
         });
 
 
-        RxStream(rx)
+        Ok(RxStream(rx))
     }
 }
 
@@ -320,7 +329,7 @@ mod tests {
         let url = "https://dlob.drift.trade";
         let client = DLOBClient::new(url, Context::MainNet);
         let market = MarketId::perp(0);
-        let stream = client.subscribe_ws(market).await;
+        let stream = client.subscribe_ws(market).await.unwrap();
         let mut short_stream = stream.take(5);
         while let Some(book) = short_stream.next().await {
             dbg!(book);
