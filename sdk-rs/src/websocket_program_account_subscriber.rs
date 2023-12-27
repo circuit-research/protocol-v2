@@ -1,4 +1,5 @@
 use std::pin::Pin;
+use std::sync::Arc;
 use anchor_lang::AccountDeserialize;
 use base64::{Engine as _, engine::general_purpose};
 use futures_util::Future;
@@ -8,7 +9,8 @@ use solana_sdk::commitment_config::CommitmentConfig;
 use solana_client::pubsub_client::PubsubClient;
 use solana_client::rpc_config::{RpcProgramAccountsConfig, RpcAccountInfoConfig};
 use crate::types::{DataAndSlot, SdkResult};
-use log::{error, info};
+use log::{error, warn};
+use tokio::task::LocalSet;
 
 pub struct WebsocketProgramAccountOptions {
     filters: Vec<RpcFilterType>,
@@ -23,7 +25,7 @@ where
     _subscription_name: String,
     url: String,
     options: WebsocketProgramAccountOptions,
-    _on_update: Option<Box<dyn Fn(String, DataAndSlot<T>) -> Pin<Box<dyn Future<Output = ()> + Send>>>>,
+    on_update: Option<Arc<dyn Fn(String, DataAndSlot<T>) -> Pin<Box<dyn Future<Output = ()>>>>>,
     _resub_timeout_ms: Option<u64>,
     subscribed: bool,
 }
@@ -36,7 +38,7 @@ where
         subscription_name: String,
         url: String,
         options: WebsocketProgramAccountOptions,
-        on_update: Option<Box<dyn Fn(String, DataAndSlot<T>) -> Pin<Box<dyn Future<Output = ()> + Send>>>>,
+        on_update: Option<Arc<dyn Fn(String, DataAndSlot<T>) -> Pin<Box<dyn Future<Output = ()>>>>>,
         resub_timeout_ms: Option<u64>
     ) -> Self {
 
@@ -44,7 +46,7 @@ where
             _subscription_name: subscription_name,
             url,
             options,
-            _on_update: on_update,
+            on_update,
             _resub_timeout_ms: resub_timeout_ms,
             subscribed: false, 
         }
@@ -89,33 +91,38 @@ where
 
         let url = self.url.clone();
         let mut latest_slot = 0;
+        let on_update = self.on_update.clone();
+        let local = LocalSet::new();
 
-        tokio::spawn(async move {
+        local.run_until(async move {
             let (mut _subscription, receiver) = PubsubClient::program_subscribe(
                 &url,
                 &drift_program::ID,
                 Some(config)
             ).unwrap(); // I think unwrapping here is fine because if the connection fails the whole thing is useless
-            
+
             while let Ok(message) = receiver.recv() {
                 let slot = message.context.slot;
                 if slot >= latest_slot {
                     latest_slot = slot;
+                    let pubkey = message.value.pubkey;
                     let data = message.value.account.data;
                     match Self::decode(data.clone()) {
                         Ok(obj) => {
-                            println!("{:?}", obj);
-                            let _data_and_slot = DataAndSlot { slot, data: obj };
+                            let data_and_slot = DataAndSlot { slot, data: obj };
+                            if let Some(ref on_update_callback) = on_update {
+                               on_update_callback(pubkey, data_and_slot).await;
+                            }
                         },
                         Err(e) => {
                             error!("Error decoding account data: {e}");
                         }
                     }
                 } else {
-                    info!("Received stale data from slot: {slot}");
+                    warn!("Received stale data from slot: {slot}");
                 }
             }
-        });
+        }).await;
 
         Ok(())
     }
@@ -127,7 +134,6 @@ mod tests {
     use super::*;
     use crate::memcmp::{get_user_filter, get_non_idle_user_filter};
     use anchor_client::Cluster;
-    use futures_util::future::BoxFuture;
     use std::str::FromStr;
     use drift_program::state::user::User;
 
@@ -146,17 +152,19 @@ mod tests {
         };
         let cluster = Cluster::from_str(MAINNET_ENDPOINT).unwrap();
         let url = cluster.ws_url().to_string();
-        
-        async fn on_update(_: String, _: DataAndSlot<User>) {}
-
         let resub_timeout_ms = 10_000;
         let subscription_name = "Test".to_string();
-        
-        let on_update_fn = Box::new(|_s, _d| {
-            let fut: BoxFuture<()> = Box::pin(async move {
-                on_update(_s, _d).await;
-            });
-            fut
+
+        async fn on_update(pubkey: String, data: DataAndSlot<User>) {
+            dbg!(pubkey);
+            dbg!(data);
+        }
+
+        let on_update_fn: Arc<dyn Fn(String, DataAndSlot<User>) 
+        -> Pin<Box<dyn Future<Output = ()> + 'static>> + Send + Sync> = Arc::new(move |s: String, d: DataAndSlot<User>| {
+            Box::pin(async move {
+                on_update(s, d).await;
+            }) as Pin<Box<dyn Future<Output = ()> + 'static>>
         });
 
         let mut ws_subscriber = WebsocketProgramAccountSubscriber::new(
