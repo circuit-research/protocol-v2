@@ -1091,6 +1091,7 @@ version = "0.1.0"
 dependencies = [
  "anchor-client",
  "anchor-lang",
+ "base64 0.21.5",
  "bs58 0.5.0",
  "drift",
  "env_logger 0.10.1",

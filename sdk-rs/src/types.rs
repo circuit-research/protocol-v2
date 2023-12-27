@@ -38,8 +38,8 @@ pub enum Context {
 }
 
 pub struct DataAndSlot<T> {
-    slot: u64,
-    data: T
+    pub slot: u64,
+    pub data: T
 }
 
 /// Id of a Drift market
@@ -231,6 +231,10 @@ pub enum SdkError {
     WebsocketError,
     #[error("Missed DLOB heartbeat")]
     MissedHeartbeat,
+    #[error("Unsupported account data format")]
+    UnsupportedAccountData,
+    #[error("Could not decode data: {0}")]
+    CouldntDecode(#[from] base64::DecodeError),
 }
 
 impl SdkError {
