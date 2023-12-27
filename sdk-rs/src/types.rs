@@ -37,6 +37,11 @@ pub enum Context {
     MainNet,
 }
 
+pub struct DataAndSlot<T> {
+    slot: u64,
+    data: T
+}
+
 /// Id of a Drift market
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct MarketId {

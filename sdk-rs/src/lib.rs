@@ -47,6 +47,8 @@ pub mod dlob;
 pub mod types;
 use types::*;
 pub mod utils;
+pub mod websocket_program_account_subscriber;
+pub mod memcmp;
 
 /// Provides solana Account fetching API
 pub trait AccountProvider: 'static + Sized {

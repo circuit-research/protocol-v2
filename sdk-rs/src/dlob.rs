@@ -271,8 +271,6 @@ mod tests {
     use crate::RpcAccountProvider;
     use super::*;
 
-    env_logger::init();
-
     // this is my (frank) free helius endpoint
     const MAINNET_ENDPOINT: &str = "https://mainnet.helius-rpc.com/?api-key=3a1ca16d-e181-4755-9fe7-eac27579b48c";
 
@@ -320,6 +318,7 @@ mod tests {
 
     #[tokio::test]
     async fn subscribe_ws() {
+        env_logger::init();
         let _ = DriftClient::new(
             Context::MainNet,
             MAINNET_ENDPOINT,
