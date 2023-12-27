@@ -123,7 +123,6 @@ impl DLOBClient {
     /// Subscribe to an orderbook via WebSocket.
     /// You MUST have a Drift Client initialized to use this fn.
     pub async fn subscribe_ws(&self, market: MarketId) -> SdkResult<L2OrderbookStream> {
-        env_logger::init();
         // This unwrap should never panic
         let ws_url = crate::utils::http_to_ws(&self.url).unwrap();
         let (mut ws_stream, _) = connect_async(ws_url).await?;
@@ -271,6 +270,8 @@ mod tests {
     use crate::DriftClient;
     use crate::RpcAccountProvider;
     use super::*;
+
+    env_logger::init();
 
     // this is my (frank) free helius endpoint
     const MAINNET_ENDPOINT: &str = "https://mainnet.helius-rpc.com/?api-key=3a1ca16d-e181-4755-9fe7-eac27579b48c";
