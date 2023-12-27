@@ -203,7 +203,6 @@ impl From<SinkError> for SdkError {
         SdkError::SubscriptionFailure(err)
     }
 }
-
 #[derive(Debug, Error)]
 pub enum SdkError {
     #[error("{0}")]
@@ -236,6 +235,8 @@ pub enum SdkError {
     UnsupportedAccountData,
     #[error("Could not decode data: {0}")]
     CouldntDecode(#[from] base64::DecodeError),
+    #[error("Solana PubSub subscription failed: {0}")]
+    PubSubFailure(#[from] solana_client::pubsub_client::PubsubClientError),
 }
 
 impl SdkError {

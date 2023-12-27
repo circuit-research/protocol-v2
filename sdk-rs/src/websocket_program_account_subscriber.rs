@@ -94,12 +94,13 @@ where
         let on_update = self.on_update.clone();
         let local = LocalSet::new();
 
+        let (mut _subscription, receiver) = PubsubClient::program_subscribe(
+            &url,
+            &drift_program::ID,
+            Some(config)
+        )?; 
+
         local.run_until(async move {
-            let (mut _subscription, receiver) = PubsubClient::program_subscribe(
-                &url,
-                &drift_program::ID,
-                Some(config)
-            ).unwrap(); // I think unwrapping here is fine because if the connection fails the whole thing is useless
 
             while let Ok(message) = receiver.recv() {
                 let slot = message.context.slot;
@@ -122,6 +123,7 @@ where
                     warn!("Received stale data from slot: {slot}");
                 }
             }
+
         }).await;
 
         Ok(())
