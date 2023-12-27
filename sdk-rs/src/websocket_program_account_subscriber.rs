@@ -107,10 +107,10 @@ where
                 if slot >= latest_slot {
                     latest_slot = slot;
                     let pubkey = message.value.pubkey;
-                    let data = message.value.account.data;
-                    match Self::decode(data.clone()) {
-                        Ok(obj) => {
-                            let data_and_slot = DataAndSlot { slot, data: obj };
+                    let account_data = message.value.account.data;
+                    match Self::decode(account_data) {
+                        Ok(data) => {
+                            let data_and_slot = DataAndSlot { slot, data };
                             if let Some(ref on_update_callback) = on_update {
                                on_update_callback(pubkey, data_and_slot).await;
                             }
