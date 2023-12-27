@@ -5,7 +5,6 @@ use futures_util::Future;
 use solana_account_decoder::{UiAccountEncoding, UiAccountData};
 use solana_client::rpc_filter::RpcFilterType;
 use solana_sdk::commitment_config::CommitmentConfig;
-use anchor_client::Client;
 use solana_client::pubsub_client::PubsubClient;
 use solana_client::rpc_config::{RpcProgramAccountsConfig, RpcAccountInfoConfig};
 use crate::types::{DataAndSlot, SdkResult};
@@ -17,29 +16,24 @@ pub struct WebsocketProgramAccountOptions {
     encoding: UiAccountEncoding,
 }
 
-pub struct WebsocketProgramAccountSubscriber<T, C>
+pub struct WebsocketProgramAccountSubscriber<T>
 where 
     T: AccountDeserialize + core::fmt::Debug,
 {
-    subscription_name: String,
-    account_discriminator: String,
-    client: Client<C>,
+    _subscription_name: String,
     url: String,
     options: WebsocketProgramAccountOptions,
-    on_update: Option<Box<dyn Fn(String, DataAndSlot<T>) -> Pin<Box<dyn Future<Output = ()> + Send>>>>,
-    resub_timeout_ms: Option<u64>,
+    _on_update: Option<Box<dyn Fn(String, DataAndSlot<T>) -> Pin<Box<dyn Future<Output = ()> + Send>>>>,
+    _resub_timeout_ms: Option<u64>,
     subscribed: bool,
-    latest_slot: u64,
 }
 
-impl<T, C> WebsocketProgramAccountSubscriber<T, C>
+impl<T> WebsocketProgramAccountSubscriber<T>
 where 
     T: AccountDeserialize + core::fmt::Debug,
 {
     pub fn new(
         subscription_name: String,
-        account_discriminator: String,
-        client: Client<C>,
         url: String,
         options: WebsocketProgramAccountOptions,
         on_update: Option<Box<dyn Fn(String, DataAndSlot<T>) -> Pin<Box<dyn Future<Output = ()> + Send>>>>,
@@ -47,15 +41,12 @@ where
     ) -> Self {
 
         WebsocketProgramAccountSubscriber {
-            subscription_name,
-            account_discriminator,
-            client,
+            _subscription_name: subscription_name,
             url,
             options,
-            on_update,
-            resub_timeout_ms,
+            _on_update: on_update,
+            _resub_timeout_ms: resub_timeout_ms,
             subscribed: false, 
-            latest_slot: 0,
         }
     }
 
@@ -97,7 +88,8 @@ where
         };
 
         let url = self.url.clone();
-        let mut latest_slot = self.latest_slot;
+        let mut latest_slot = 0;
+
         tokio::spawn(async move {
             let (mut _subscription, receiver) = PubsubClient::program_subscribe(
                 &url,
@@ -110,10 +102,10 @@ where
                 if slot >= latest_slot {
                     latest_slot = slot;
                     let data = message.value.account.data;
-                    let _data_and_slot = DataAndSlot { slot, data: data.clone() };
                     match Self::decode(data.clone()) {
                         Ok(obj) => {
-                            dbg!(obj);
+                            println!("{:?}", obj);
+                            let _data_and_slot = DataAndSlot { slot, data: obj };
                         },
                         Err(e) => {
                             error!("Error decoding account data: {e}");
@@ -136,7 +128,6 @@ mod tests {
     use crate::memcmp::{get_user_filter, get_non_idle_user_filter};
     use anchor_client::Cluster;
     use futures_util::future::BoxFuture;
-    use solana_sdk::signer::keypair::Keypair;
     use std::str::FromStr;
     use drift_program::state::user::User;
 
@@ -153,16 +144,13 @@ mod tests {
             commitment,
             encoding: UiAccountEncoding::Base64
         };
-        let keypair = std::rc::Rc::new(Keypair::new());
         let cluster = Cluster::from_str(MAINNET_ENDPOINT).unwrap();
         let url = cluster.ws_url().to_string();
-        let client = Client::new_with_options(cluster, keypair, CommitmentConfig::confirmed());
         
         async fn on_update(_: String, _: DataAndSlot<User>) {}
 
         let resub_timeout_ms = 10_000;
         let subscription_name = "Test".to_string();
-        let account_discriminator = "User".to_string();
         
         let on_update_fn = Box::new(|_s, _d| {
             let fut: BoxFuture<()> = Box::pin(async move {
@@ -173,15 +161,13 @@ mod tests {
 
         let mut ws_subscriber = WebsocketProgramAccountSubscriber::new(
             subscription_name,
-            account_discriminator,
-            client,
             url,
             options,
             Some(on_update_fn),
             Some(resub_timeout_ms)
         );
 
-        ws_subscriber.subscribe().await;
+        let _ = ws_subscriber.subscribe().await;
 
         tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
     }
