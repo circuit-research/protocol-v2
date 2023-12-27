@@ -1,7 +1,6 @@
 use std::pin::Pin;
 use anchor_lang::AccountDeserialize;
 use base64::{Engine as _, engine::general_purpose};
-use drift_program::state::user::User;
 use futures_util::Future;
 use solana_account_decoder::{UiAccountEncoding, UiAccountData};
 use solana_client::rpc_filter::RpcFilterType;
@@ -11,14 +10,6 @@ use solana_client::pubsub_client::PubsubClient;
 use solana_client::rpc_config::{RpcProgramAccountsConfig, RpcAccountInfoConfig};
 use crate::types::{DataAndSlot, SdkResult};
 use log::{error, info};
-
-
-pub trait AccountDecoder {
-    type Output;
-    fn decode(data: UiAccountData) -> SdkResult<Self::Output>;
-}
-
-pub struct DefaultDecoder;
 
 pub struct WebsocketProgramAccountOptions {
     filters: Vec<RpcFilterType>,
@@ -83,12 +74,14 @@ where
         Ok(result)
     }
 
-    pub async fn subscribe(&mut self) {
+    pub async fn subscribe(&mut self) -> SdkResult<()> {
         if self.subscribed {
-            return;
+            return Ok(());
         }
         self.subscribed = true;
-        self.subscribe_ws().await;
+        self.subscribe_ws().await?;
+
+        Ok(())
     }
 
     async fn subscribe_ws(&mut self) -> SdkResult<()> {
@@ -104,6 +97,7 @@ where
         };
 
         let url = self.url.clone();
+        let mut latest_slot = self.latest_slot;
         tokio::spawn(async move {
             let (mut _subscription, receiver) = PubsubClient::program_subscribe(
                 &url,
@@ -113,15 +107,20 @@ where
             
             while let Ok(message) = receiver.recv() {
                 let slot = message.context.slot;
-                let data = message.value.account.data;
-                let _data_and_slot = DataAndSlot { slot, data: data.clone() };
-                match Self::decode(data.clone()) {
-                    Ok(obj) => {
-                        dbg!(obj);
-                    },
-                    Err(e) => {
-                        error!("Error decoding account data: {e}");
+                if slot >= latest_slot {
+                    latest_slot = slot;
+                    let data = message.value.account.data;
+                    let _data_and_slot = DataAndSlot { slot, data: data.clone() };
+                    match Self::decode(data.clone()) {
+                        Ok(obj) => {
+                            dbg!(obj);
+                        },
+                        Err(e) => {
+                            error!("Error decoding account data: {e}");
+                        }
                     }
+                } else {
+                    info!("Received stale data from slot: {slot}");
                 }
             }
         });
