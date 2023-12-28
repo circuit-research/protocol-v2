@@ -235,8 +235,8 @@ pub enum SdkError {
     UnsupportedAccountData,
     #[error("Could not decode data: {0}")]
     CouldntDecode(#[from] base64::DecodeError),
-    #[error("Solana PubSub subscription failed: {0}")]
-    PubSubFailure(#[from] solana_client::pubsub_client::PubsubClientError),
+    #[error("Couldn't join task: {0}")]
+    CouldntJoin(#[from] tokio::task::JoinError)
 }
 
 impl SdkError {

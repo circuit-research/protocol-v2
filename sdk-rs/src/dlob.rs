@@ -1,6 +1,7 @@
+// Standard Library Imports
 use std::{task::Poll, time::Duration};
 
-
+// External Crate Imports
 use drift_program::state::user::MarketType;
 use futures_util::{SinkExt, Stream, StreamExt};
 use log::{error, info};
@@ -9,11 +10,18 @@ use serde::{
     de::{self},
     Deserialize, Serialize,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tokio::sync::mpsc::{channel, Receiver};
 use tokio::time::{Duration as TokioDuration, Instant};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use crate::{types::{MarketId, SdkError, SdkResult}, constants::{perp_market_config_by_index, spot_market_config_by_index}, Context, utils::to_ws_json};
+
+// Internal Crate/Module Imports
+use crate::{
+    constants::{perp_market_config_by_index, spot_market_config_by_index},
+    types::{MarketId, SdkError, SdkResult},
+    Context,
+    utils::to_ws_json,
+};
 
 pub type L2OrderbookStream = RxStream<Result<L2Orderbook, SdkError>>;
 
@@ -291,7 +299,7 @@ mod tests {
         let stream = client.subscribe_l2_book(MarketId::perp(0), None);
         let mut short_stream = stream.take(5);
         while let Some(book) = short_stream.next().await {
-            dbg!(book);
+            let _ = dbg!(book);
         }
     }
 
@@ -312,7 +320,7 @@ mod tests {
         let stream = client.subscribe_l3_book(MarketId::perp(0), None);
         let mut short_stream = stream.take(5);
         while let Some(book) = short_stream.next().await {
-            dbg!(book);
+            let _ = dbg!(book);
         }
     }
 
@@ -332,7 +340,7 @@ mod tests {
         let stream = client.subscribe_ws(market).await.unwrap();
         let mut short_stream = stream.take(5);
         while let Some(book) = short_stream.next().await {
-            dbg!(book);
+            let _ = dbg!(book);
         }
     }
 }

@@ -866,8 +866,7 @@ impl Wallet {
 mod tests {
     use std::str::FromStr;
 
-    use anchor_lang::Discriminator;
-    use drift_program::state::{perp_market::PerpMarket, traits::Size};
+    use drift_program::state::perp_market::PerpMarket;
     use serde_json::json;
     use solana_account_decoder::{UiAccount, UiAccountData};
     use solana_client::{

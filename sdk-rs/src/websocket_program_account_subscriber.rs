@@ -1,16 +1,25 @@
-use std::pin::Pin;
+// Standard Library Imports
 use std::sync::Arc;
+
+// External Crate Imports
 use anchor_lang::AccountDeserialize;
-use base64::{Engine as _, engine::general_purpose};
-use futures_util::Future;
-use solana_account_decoder::{UiAccountEncoding, UiAccountData};
-use solana_client::rpc_filter::RpcFilterType;
-use solana_sdk::commitment_config::CommitmentConfig;
-use solana_client::pubsub_client::PubsubClient;
-use solana_client::rpc_config::{RpcProgramAccountsConfig, RpcAccountInfoConfig};
-use crate::types::{DataAndSlot, SdkResult};
+use base64::{engine::general_purpose, Engine as _};
+use futures_util::{future::BoxFuture, StreamExt};
 use log::{error, warn};
-use tokio::task::LocalSet;
+use solana_account_decoder::{UiAccountData, UiAccountEncoding};
+use solana_client::{
+    nonblocking::pubsub_client::PubsubClient,
+    rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
+    rpc_filter::RpcFilterType,
+};
+use solana_sdk::commitment_config::CommitmentConfig;
+use tokio::task::{spawn_local, LocalSet};
+
+// Internal Crate/Module Imports
+use crate::types::{DataAndSlot, SdkResult};
+
+
+type OnUpdate<T> = Arc<dyn Fn(String, DataAndSlot<T>) -> BoxFuture<'static, ()> + Send + Sync>;
 
 pub struct WebsocketProgramAccountOptions {
     filters: Vec<RpcFilterType>,
@@ -20,25 +29,25 @@ pub struct WebsocketProgramAccountOptions {
 
 pub struct WebsocketProgramAccountSubscriber<T>
 where 
-    T: AccountDeserialize + core::fmt::Debug,
+    T: AccountDeserialize + core::fmt::Debug + 'static,
 {
     _subscription_name: String,
     url: String,
     options: WebsocketProgramAccountOptions,
-    on_update: Option<Arc<dyn Fn(String, DataAndSlot<T>) -> Pin<Box<dyn Future<Output = ()>>>>>,
+    on_update: Option<OnUpdate<T>>,
     _resub_timeout_ms: Option<u64>,
     subscribed: bool,
 }
 
 impl<T> WebsocketProgramAccountSubscriber<T>
 where 
-    T: AccountDeserialize + core::fmt::Debug,
+    T: AccountDeserialize + core::fmt::Debug + 'static,
 {
     pub fn new(
         subscription_name: String,
         url: String,
         options: WebsocketProgramAccountOptions,
-        on_update: Option<Arc<dyn Fn(String, DataAndSlot<T>) -> Pin<Box<dyn Future<Output = ()>>>>>,
+        on_update: Option<OnUpdate<T>>,
         resub_timeout_ms: Option<u64>
     ) -> Self {
 
@@ -94,26 +103,30 @@ where
         let on_update = self.on_update.clone();
         let local = LocalSet::new();
 
-        let (mut _subscription, receiver) = PubsubClient::program_subscribe(
-            &url,
-            &drift_program::ID,
-            Some(config)
-        )?; 
+        let pubsub = PubsubClient::new(&url).await?;
 
         local.run_until(async move {
+            
+            let (mut subscription, _receiver) = pubsub.program_subscribe(
+                &drift_program::ID,
+                Some(config)
+            ).await.unwrap(); 
 
-            while let Ok(message) = receiver.recv() {
+            while let Some(message) = subscription.next().await {
                 let slot = message.context.slot;
                 if slot >= latest_slot {
                     latest_slot = slot;
                     let pubkey = message.value.pubkey;
                     let account_data = message.value.account.data;
+                    let on_update_clone = on_update.clone();
                     match Self::decode(account_data) {
                         Ok(data) => {
-                            let data_and_slot = DataAndSlot { slot, data };
-                            if let Some(ref on_update_callback) = on_update {
-                               on_update_callback(pubkey, data_and_slot).await;
-                            }
+                            spawn_local(async move {
+                                let data_and_slot = DataAndSlot { slot, data };
+                                if let Some(ref on_update_callback) = on_update_clone {
+                                   on_update_callback(pubkey, data_and_slot).await;
+                                }
+                            });
                         },
                         Err(e) => {
                             error!("Error decoding account data: {e}");
@@ -163,10 +176,10 @@ mod tests {
         }
 
         let on_update_fn: Arc<dyn Fn(String, DataAndSlot<User>) 
-        -> Pin<Box<dyn Future<Output = ()> + 'static>> + Send + Sync> = Arc::new(move |s: String, d: DataAndSlot<User>| {
+        -> BoxFuture<'static, ()> + Send + Sync> = Arc::new(move |s: String, d: DataAndSlot<User>| {
             Box::pin(async move {
                 on_update(s, d).await;
-            }) as Pin<Box<dyn Future<Output = ()> + 'static>>
+            })
         });
 
         let mut ws_subscriber = WebsocketProgramAccountSubscriber::new(
