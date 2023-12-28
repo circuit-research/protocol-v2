@@ -6,17 +6,16 @@ use core::pin::Pin;
 use anchor_lang::AccountDeserialize;
 use base64::{engine::general_purpose, Engine as _};
 use events_emitter::EventEmitter;
-use futures_util::{future::BoxFuture, Future, StreamExt, Stream};
+use futures_util::{Future, StreamExt};
 use log::{error, warn};
 use solana_account_decoder::{UiAccountData, UiAccountEncoding};
 use solana_client::{
     nonblocking::pubsub_client::PubsubClient,
     rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
     rpc_filter::RpcFilterType,
-    rpc_response::{Response, RpcKeyedAccount},
 };
 use solana_sdk::commitment_config::CommitmentConfig;
-use tokio::task::{spawn_local, LocalSet};
+use tokio::task::LocalSet;
 
 // Internal Crate/Module Imports
 use crate::types::{DataAndSlot, SdkResult};
@@ -55,7 +54,7 @@ where
         url: String,
         options: WebsocketProgramAccountOptions,
         on_update: Option<OnUpdate<T>>,
-        event_emitter: Option<Arc<Mutex<EventEmitter<(String, DataAndSlot<T>)>>>>,
+        event_emitter: Option<SafeEventEmitter<T>>,
         resub_timeout_ms: Option<u64>
     ) -> Self {
 
@@ -66,7 +65,7 @@ where
             on_update,
             _resub_timeout_ms: resub_timeout_ms,
             subscribed: false, 
-            event_emitter: event_emitter,
+            event_emitter,
             unsubscriber: None,
         }
     }
