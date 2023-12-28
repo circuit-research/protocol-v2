@@ -1064,6 +1064,7 @@ name = "drift-sdk"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
+ "bytemuck",
  "drift",
  "fnv",
  "futures-util",

@@ -1,6 +1,9 @@
 //! SDK utility functions
 
-use solana_sdk::{bs58, signature::Keypair};
+use solana_sdk::{
+    account::Account, address_lookup_table_account::AddressLookupTableAccount, bs58,
+    pubkey::Pubkey, signature::Keypair,
+};
 
 use crate::types::{SdkError, SdkResult};
 
@@ -37,6 +40,28 @@ pub fn load_keypair_multi_format(path_or_key: &str) -> SdkResult<Keypair> {
     } else {
         read_keypair_str_multi_format(path_or_key)
     }
+}
+
+const LOOKUP_TABLE_META_SIZE: usize = 56;
+
+/// modified from sdk.1.17.x
+/// https://docs.rs/solana-program/latest/src/solana_program/address_lookup_table/state.rs.html#192
+pub fn deserialize_alt(address: Pubkey, account: &Account) -> SdkResult<AddressLookupTableAccount> {
+    let raw_addresses_data: &[u8] = account.data.get(LOOKUP_TABLE_META_SIZE..).ok_or({
+        // Should be impossible because table accounts must
+        // always be LOOKUP_TABLE_META_SIZE in length
+        SdkError::InvalidAccount
+    })?;
+    let addresses = bytemuck::try_cast_slice(raw_addresses_data).map_err(|_| {
+        // Should be impossible because raw address data
+        // should be aligned and sized in multiples of 32 bytes
+        SdkError::InvalidAccount
+    })?;
+
+    Ok(AddressLookupTableAccount {
+        key: address,
+        addresses: addresses.to_vec(),
+    })
 }
 
 #[cfg(test)]
