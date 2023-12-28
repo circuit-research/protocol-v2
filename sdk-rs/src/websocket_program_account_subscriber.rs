@@ -21,7 +21,7 @@ use tokio::task::LocalSet;
 use crate::types::{DataAndSlot, SdkResult};
 
 
-pub type OnUpdate<T> = Arc<dyn Fn(Option<Arc<Mutex<EventEmitter<(String, DataAndSlot<T>)>>>>, String, DataAndSlot<T>) + Send + Sync>;
+pub type OnUpdate<T> = Arc<dyn Fn(Option<SafeEventEmitter<T>>, String, DataAndSlot<T>) + Send + Sync>;
 
 pub type SafeEventEmitter<T> = Arc<Mutex<EventEmitter<(String, DataAndSlot<T>)>>>;
 

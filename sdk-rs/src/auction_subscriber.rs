@@ -24,8 +24,8 @@ pub struct AuctionSubscriberConfig {
 }
 
 pub struct AuctionSubscriber {
-    subscriber: WebsocketProgramAccountSubscriber<User>,
-    event_emitter: SafeEventEmitter<User>,
+    pub subscriber: WebsocketProgramAccountSubscriber<User>,
+    pub event_emitter: SafeEventEmitter<User>,
 }
 
 impl AuctionSubscriber {
@@ -55,7 +55,6 @@ impl AuctionSubscriber {
             config.resub_timeout_ms
         );
 
-
         AuctionSubscriber {
             subscriber,
             event_emitter: safe_event_emitter.clone(),
@@ -69,7 +68,7 @@ impl AuctionSubscriber {
         }
     }
 
-    async fn subscribe(&mut self) -> SdkResult<()> {
+    pub async fn subscribe(&mut self) -> SdkResult<()> {
         if self.subscriber.subscribed {
             return Ok(())
         }
@@ -79,7 +78,7 @@ impl AuctionSubscriber {
         Ok(())
     }
 
-    async fn unsubscribe(&mut self) -> SdkResult<()> {
+    pub async fn unsubscribe(&mut self) -> SdkResult<()> {
         self.subscriber.unsubscribe().await?;
 
         Ok(())
