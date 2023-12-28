@@ -1,16 +1,19 @@
 // Standard Library Imports
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use core::pin::Pin;
 
 // External Crate Imports
 use anchor_lang::AccountDeserialize;
 use base64::{engine::general_purpose, Engine as _};
-use futures_util::{future::BoxFuture, StreamExt};
+use events_emitter::EventEmitter;
+use futures_util::{future::BoxFuture, Future, StreamExt, Stream};
 use log::{error, warn};
 use solana_account_decoder::{UiAccountData, UiAccountEncoding};
 use solana_client::{
     nonblocking::pubsub_client::PubsubClient,
     rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig},
     rpc_filter::RpcFilterType,
+    rpc_response::{Response, RpcKeyedAccount},
 };
 use solana_sdk::commitment_config::CommitmentConfig;
 use tokio::task::{spawn_local, LocalSet};
@@ -19,12 +22,14 @@ use tokio::task::{spawn_local, LocalSet};
 use crate::types::{DataAndSlot, SdkResult};
 
 
-type OnUpdate<T> = Arc<dyn Fn(String, DataAndSlot<T>) -> BoxFuture<'static, ()> + Send + Sync>;
+pub type OnUpdate<T> = Arc<dyn Fn(Option<Arc<Mutex<EventEmitter<(String, DataAndSlot<T>)>>>>, String, DataAndSlot<T>) + Send + Sync>;
+
+pub type SafeEventEmitter<T> = Arc<Mutex<EventEmitter<(String, DataAndSlot<T>)>>>;
 
 pub struct WebsocketProgramAccountOptions {
-    filters: Vec<RpcFilterType>,
-    commitment: CommitmentConfig,
-    encoding: UiAccountEncoding,
+    pub filters: Vec<RpcFilterType>,
+    pub commitment: CommitmentConfig,
+    pub encoding: UiAccountEncoding,
 }
 
 pub struct WebsocketProgramAccountSubscriber<T>
@@ -36,7 +41,9 @@ where
     options: WebsocketProgramAccountOptions,
     on_update: Option<OnUpdate<T>>,
     _resub_timeout_ms: Option<u64>,
-    subscribed: bool,
+    pub subscribed: bool,
+    event_emitter: Option<SafeEventEmitter<T>>,
+    unsubscriber: Option<Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>>,
 }
 
 impl<T> WebsocketProgramAccountSubscriber<T>
@@ -48,6 +55,7 @@ where
         url: String,
         options: WebsocketProgramAccountOptions,
         on_update: Option<OnUpdate<T>>,
+        event_emitter: Option<Arc<Mutex<EventEmitter<(String, DataAndSlot<T>)>>>>,
         resub_timeout_ms: Option<u64>
     ) -> Self {
 
@@ -58,6 +66,8 @@ where
             on_update,
             _resub_timeout_ms: resub_timeout_ms,
             subscribed: false, 
+            event_emitter: event_emitter,
+            unsubscriber: None,
         }
     }
 
@@ -105,14 +115,18 @@ where
 
         let pubsub = PubsubClient::new(&url).await?;
 
+        let event_emitter = self.event_emitter.clone();
+
         local.run_until(async move {
             
-            let (mut subscription, _receiver) = pubsub.program_subscribe(
+            let (mut accounts, unsubscribe) = pubsub.program_subscribe(
                 &drift_program::ID,
                 Some(config)
             ).await.unwrap(); 
-
-            while let Some(message) = subscription.next().await {
+            
+            self.unsubscriber = Some(unsubscribe);
+            
+            while let Some(message) = accounts.next().await {
                 let slot = message.context.slot;
                 if slot >= latest_slot {
                     latest_slot = slot;
@@ -121,12 +135,10 @@ where
                     let on_update_clone = on_update.clone();
                     match Self::decode(account_data) {
                         Ok(data) => {
-                            spawn_local(async move {
-                                let data_and_slot = DataAndSlot { slot, data };
-                                if let Some(ref on_update_callback) = on_update_clone {
-                                   on_update_callback(pubkey, data_and_slot).await;
-                                }
-                            });
+                            let data_and_slot = DataAndSlot { slot, data };
+                            if let Some(ref on_update_callback) = on_update_clone {
+                                on_update_callback(event_emitter.clone(), pubkey, data_and_slot);                          
+                            }
                         },
                         Err(e) => {
                             error!("Error decoding account data: {e}");
@@ -139,6 +151,15 @@ where
 
         }).await;
 
+        Ok(())
+    }
+
+    pub async fn unsubscribe(&mut self) -> SdkResult<()> {
+        if let Some(unsubscriber) = self.unsubscriber.take() {
+            let future = (unsubscriber)();
+            future.await;
+        }
+        self.subscribed = false;
         Ok(())
     }
 }
@@ -170,16 +191,13 @@ mod tests {
         let resub_timeout_ms = 10_000;
         let subscription_name = "Test".to_string();
 
-        async fn on_update(pubkey: String, data: DataAndSlot<User>) {
+        fn on_update(_emitter: Option<SafeEventEmitter<User>>, pubkey: String, data: DataAndSlot<User>) {
             dbg!(pubkey);
             dbg!(data);
         }
 
-        let on_update_fn: Arc<dyn Fn(String, DataAndSlot<User>) 
-        -> BoxFuture<'static, ()> + Send + Sync> = Arc::new(move |s: String, d: DataAndSlot<User>| {
-            Box::pin(async move {
-                on_update(s, d).await;
-            })
+        let on_update_fn: OnUpdate<User> = Arc::new(move |emitter, s, d| {
+            on_update(emitter, s, d); 
         });
 
         let mut ws_subscriber = WebsocketProgramAccountSubscriber::new(
@@ -187,11 +205,10 @@ mod tests {
             url,
             options,
             Some(on_update_fn),
+            None,
             Some(resub_timeout_ms)
         );
 
         let _ = ws_subscriber.subscribe().await;
-
-        tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
     }
 }

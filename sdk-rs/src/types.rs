@@ -37,7 +37,7 @@ pub enum Context {
     MainNet,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DataAndSlot<T> {
     pub slot: u64,
     pub data: T

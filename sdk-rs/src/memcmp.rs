@@ -15,3 +15,10 @@ pub fn get_non_idle_user_filter() -> RpcFilterType {
         vec![1],
     ))
 }
+
+pub fn get_user_with_auction_filter() -> RpcFilterType {
+    return RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
+        4354,
+        vec![1],
+    ))
+}
