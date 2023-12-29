@@ -1,13 +1,12 @@
 // Standard Library Imports
 use std::sync::{Arc, Mutex};
-use core::pin::Pin;
 
 // External Crate Imports
 use anchor_lang::AccountDeserialize;
 use base64::{engine::general_purpose, Engine as _};
 use events_emitter::EventEmitter;
-use futures_util::{Future, StreamExt};
-use log::{error, warn};
+use futures_util::StreamExt;
+use log::error;
 use solana_account_decoder::{UiAccountData, UiAccountEncoding};
 use solana_client::{
     nonblocking::pubsub_client::PubsubClient,
@@ -15,7 +14,6 @@ use solana_client::{
     rpc_filter::RpcFilterType,
 };
 use solana_sdk::commitment_config::CommitmentConfig;
-use tokio::task::LocalSet;
 
 // Internal Crate/Module Imports
 use crate::types::{DataAndSlot, SdkResult};
@@ -110,44 +108,10 @@ where
         let url = self.url.clone();
         let mut latest_slot = 0;
         let on_update = self.on_update.clone();
-        let local = LocalSet::new();
 
         let pubsub = PubsubClient::new(&url).await?;
 
         let event_emitter = self.event_emitter.clone();
-
-        // local.run_until(async move {
-        //     let (mut accounts, unsubscribe) = pubsub.program_subscribe(
-        //         &drift_program::ID,
-        //         Some(config)
-        //     ).await.unwrap(); 
-            
-        //     self.unsubscriber = Some(unsubscribe);
-            
-        //     while let Some(message) = accounts.next().await {
-        //         let slot = message.context.slot;
-        //         if slot >= latest_slot {
-        //             latest_slot = slot;
-        //             let pubkey = message.value.pubkey;
-        //             let account_data = message.value.account.data;
-        //             let on_update_clone = on_update.clone();
-        //             match Self::decode(account_data) {
-        //                 Ok(data) => {
-        //                     let data_and_slot = DataAndSlot { slot, data };
-        //                     if let Some(ref on_update_callback) = on_update_clone {
-        //                         on_update_callback(event_emitter.clone(), pubkey, data_and_slot);                          
-        //                     }
-        //                 },
-        //                 Err(e) => {
-        //                     error!("Error decoding account data: {e}");
-        //                 }
-        //             }
-        //         } else {
-        //             warn!("Received stale data from slot: {slot}");
-        //         }
-        //     }
-
-        // }).await;
 
         let (unsub_tx, mut unsub_rx) = tokio::sync::mpsc::channel::<Option<()>>(1);
         
