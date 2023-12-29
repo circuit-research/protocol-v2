@@ -236,7 +236,9 @@ pub enum SdkError {
     #[error("Could not decode data: {0}")]
     CouldntDecode(#[from] base64::DecodeError),
     #[error("Couldn't join task: {0}")]
-    CouldntJoin(#[from] tokio::task::JoinError)
+    CouldntJoin(#[from] tokio::task::JoinError),
+    #[error("Couldn't send unsubscribe message: {0}")]
+    CouldntUnsubscribe(#[from] tokio::sync::mpsc::error::SendError<Option<()>>),
 }
 
 impl SdkError {

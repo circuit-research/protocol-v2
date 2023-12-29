@@ -42,7 +42,7 @@ where
     _resub_timeout_ms: Option<u64>,
     pub subscribed: bool,
     event_emitter: Option<SafeEventEmitter<T>>,
-    unsubscriber: Option<Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>>,
+    unsubscriber: Option<tokio::sync::mpsc::Sender<Option<()>>>
 }
 
 impl<T> WebsocketProgramAccountSubscriber<T>
@@ -116,49 +116,92 @@ where
 
         let event_emitter = self.event_emitter.clone();
 
-        local.run_until(async move {
+        // local.run_until(async move {
+        //     let (mut accounts, unsubscribe) = pubsub.program_subscribe(
+        //         &drift_program::ID,
+        //         Some(config)
+        //     ).await.unwrap(); 
             
-            let (mut accounts, unsubscribe) = pubsub.program_subscribe(
+        //     self.unsubscriber = Some(unsubscribe);
+            
+        //     while let Some(message) = accounts.next().await {
+        //         let slot = message.context.slot;
+        //         if slot >= latest_slot {
+        //             latest_slot = slot;
+        //             let pubkey = message.value.pubkey;
+        //             let account_data = message.value.account.data;
+        //             let on_update_clone = on_update.clone();
+        //             match Self::decode(account_data) {
+        //                 Ok(data) => {
+        //                     let data_and_slot = DataAndSlot { slot, data };
+        //                     if let Some(ref on_update_callback) = on_update_clone {
+        //                         on_update_callback(event_emitter.clone(), pubkey, data_and_slot);                          
+        //                     }
+        //                 },
+        //                 Err(e) => {
+        //                     error!("Error decoding account data: {e}");
+        //                 }
+        //             }
+        //         } else {
+        //             warn!("Received stale data from slot: {slot}");
+        //         }
+        //     }
+
+        // }).await;
+
+        let (unsub_tx, mut unsub_rx) = tokio::sync::mpsc::channel::<Option<()>>(1);
+        
+        self.unsubscriber = Some(unsub_tx);
+
+        tokio::spawn( async move {
+            let (mut accounts, unsubscriber) = pubsub.program_subscribe(
                 &drift_program::ID,
                 Some(config)
-            ).await.unwrap(); 
-            
-            self.unsubscriber = Some(unsubscribe);
-            
-            while let Some(message) = accounts.next().await {
-                let slot = message.context.slot;
-                if slot >= latest_slot {
-                    latest_slot = slot;
-                    let pubkey = message.value.pubkey;
-                    let account_data = message.value.account.data;
-                    let on_update_clone = on_update.clone();
-                    match Self::decode(account_data) {
-                        Ok(data) => {
-                            let data_and_slot = DataAndSlot { slot, data };
-                            if let Some(ref on_update_callback) = on_update_clone {
-                                on_update_callback(event_emitter.clone(), pubkey, data_and_slot);                          
+            ).await.unwrap();
+
+            loop {
+                tokio::select! {
+                    Some(message) = accounts.next() => {
+                        let slot = message.context.slot;
+                        if slot >= latest_slot {
+                            latest_slot = slot;
+                            let pubkey = message.value.pubkey;
+                            let account_data = message.value.account.data;
+                            let on_update_clone = on_update.clone();
+                            match Self::decode(account_data) {
+                                Ok(data) => {
+                                    let data_and_slot = DataAndSlot { slot, data };
+                                    if let Some(ref on_update_callback) = on_update_clone {
+                                        on_update_callback(event_emitter.clone(), pubkey, data_and_slot);
+                                    }
+                                },
+                                Err(e) => {
+                                    error!("Error decoding account data {e}");
+                                }
                             }
-                        },
-                        Err(e) => {
-                            error!("Error decoding account data: {e}");
                         }
                     }
-                } else {
-                    warn!("Received stale data from slot: {slot}");
+                    _ = unsub_rx.recv() => {
+                        println!("Unsubscribing.");
+                        let future = unsubscriber();
+                        future.await;
+                        break;
+                    }
                 }
             }
-
-        }).await;
+        });
 
         Ok(())
     }
 
     pub async fn unsubscribe(&mut self) -> SdkResult<()> {
-        if let Some(unsubscriber) = self.unsubscriber.take() {
-            let future = (unsubscriber)();
-            future.await;
+        if self.subscribed && self.unsubscriber.is_some() {
+            if let Err(e) = self.unsubscriber.clone().unwrap().send(None).await {
+                eprintln!("Failed to send unsubscribe signal: {:?}", e);
+                return Err(crate::types::SdkError::CouldntUnsubscribe(e)); 
+            }
+            self.subscribed = false;
         }
-        self.subscribed = false;
         Ok(())
     }
 }
@@ -209,5 +252,11 @@ mod tests {
         );
 
         let _ = ws_subscriber.subscribe().await;
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+
+        let _ = ws_subscriber.unsubscribe().await;
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
     }
 }

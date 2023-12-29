@@ -119,5 +119,11 @@ mod tests {
         drop(emitter);
 
         let _ = auction_subscriber.subscribe().await;
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+
+        let _ = auction_subscriber.unsubscribe().await;
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
     }
 }
