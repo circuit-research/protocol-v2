@@ -18,9 +18,9 @@ use crate::{
 };
 
 pub struct AuctionSubscriberConfig {
-    commitment: CommitmentConfig,
-    resub_timeout_ms: Option<u64>,    
-    url: String,
+    pub commitment: CommitmentConfig,
+    pub resub_timeout_ms: Option<u64>,    
+    pub url: String,
 }
 
 pub struct AuctionSubscriber {

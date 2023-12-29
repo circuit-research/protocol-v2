@@ -52,7 +52,7 @@ pub mod websocket_program_account_subscriber;
 pub mod auction_subscriber;
 
 /// Provides solana Account fetching API
-pub trait AccountProvider: 'static + Sized {
+pub trait AccountProvider: 'static + Sized + Send + Sync {
     // TODO: async fn when it stabilizes
     /// Return the Account information of `account`
     fn get_account(&self, account: Pubkey) -> BoxFuture<SdkResult<Account>>;
@@ -212,14 +212,16 @@ impl AccountProvider for WsAccountProvider {
 #[derive(Clone)]
 pub struct DriftClient<T: AccountProvider> {
     backend: &'static DriftClientBackend<T>,
+    active_sub_account_id: u16,
 }
 
 impl<T: AccountProvider> DriftClient<T> {
-    pub async fn new(context: Context, endpoint: &str, account_provider: T) -> SdkResult<Self> {
+    pub async fn new(context: Context, endpoint: &str, account_provider: T, active_sub_account_id: Option<u16>) -> SdkResult<Self> {
         Ok(Self {
             backend: Box::leak(Box::new(
                 DriftClientBackend::new(context, endpoint, account_provider).await?,
             )),
+            active_sub_account_id: active_sub_account_id.unwrap_or(0),
         })
     }
 
@@ -374,6 +376,14 @@ impl<T: AccountProvider> DriftClient<T> {
             *account,
             Cow::Owned(account_data),
         ))
+    }
+
+    pub fn get_sub_account_id_for_ix(&self, sub_account_id: Option<u16>) -> u16 {
+        return if sub_account_id.is_some() {
+            sub_account_id.unwrap()
+        } else {
+            self.active_sub_account_id
+        };
     }
 }
 
@@ -694,7 +704,7 @@ impl<'a> TransactionBuilder<'a> {
 ///
 /// # Panics
 ///  if the user has positions in an unknown market (i.e unsupported by the SDK)
-fn build_accounts(
+pub fn build_accounts(
     context: Context,
     base_accounts: impl ToAccountMetas,
     user: &User,
@@ -900,6 +910,7 @@ mod tests {
 
         DriftClient {
             backend: Box::leak(Box::new(backend)),
+            active_sub_account_id: 0,
         }
     }
 
@@ -909,6 +920,7 @@ mod tests {
             Context::DevNet,
             DEVNET_ENDPOINT,
             RpcAccountProvider::new(DEVNET_ENDPOINT),
+            None,
         )
         .await
         .unwrap();
