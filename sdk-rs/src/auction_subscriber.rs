@@ -120,10 +120,10 @@ mod tests {
 
         let _ = auction_subscriber.subscribe().await;
 
-        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
 
         let _ = auction_subscriber.unsubscribe().await;
 
-        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
     }
 }

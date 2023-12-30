@@ -238,7 +238,7 @@ pub enum SdkError {
     #[error("Couldn't join task: {0}")]
     CouldntJoin(#[from] tokio::task::JoinError),
     #[error("Couldn't send unsubscribe message: {0}")]
-    CouldntUnsubscribe(#[from] tokio::sync::mpsc::error::SendError<Option<()>>),
+    CouldntUnsubscribe(#[from] tokio::sync::mpsc::error::SendError<()>),
 }
 
 impl SdkError {

@@ -40,7 +40,7 @@ where
     _resub_timeout_ms: Option<u64>,
     pub subscribed: bool,
     event_emitter: Option<SafeEventEmitter<T>>,
-    unsubscriber: Option<tokio::sync::mpsc::Sender<Option<()>>>
+    unsubscriber: Option<tokio::sync::mpsc::Sender<()>>
 }
 
 impl<T> WebsocketProgramAccountSubscriber<T>
@@ -113,7 +113,7 @@ where
 
         let event_emitter = self.event_emitter.clone();
 
-        let (unsub_tx, mut unsub_rx) = tokio::sync::mpsc::channel::<Option<()>>(1);
+        let (unsub_tx, mut unsub_rx) = tokio::sync::mpsc::channel::<()>(1);
         
         self.unsubscriber = Some(unsub_tx);
 
@@ -160,7 +160,7 @@ where
 
     pub async fn unsubscribe(&mut self) -> SdkResult<()> {
         if self.subscribed && self.unsubscriber.is_some() {
-            if let Err(e) = self.unsubscriber.clone().unwrap().send(None).await {
+            if let Err(e) = self.unsubscriber.clone().unwrap().send(()).await {
                 eprintln!("Failed to send unsubscribe signal: {:?}", e);
                 return Err(crate::types::SdkError::CouldntUnsubscribe(e)); 
             }
