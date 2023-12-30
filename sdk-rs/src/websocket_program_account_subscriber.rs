@@ -6,7 +6,7 @@ use anchor_lang::AccountDeserialize;
 use base64::{engine::general_purpose, Engine as _};
 use events_emitter::EventEmitter;
 use futures_util::StreamExt;
-use log::error;
+use log::{error, warn};
 use solana_account_decoder::{UiAccountData, UiAccountEncoding};
 use solana_client::{
     nonblocking::pubsub_client::PubsubClient,
@@ -33,7 +33,7 @@ pub struct WebsocketProgramAccountSubscriber<T>
 where 
     T: AccountDeserialize + core::fmt::Debug + 'static,
 {
-    _subscription_name: String,
+    subscription_name: String,
     url: String,
     options: WebsocketProgramAccountOptions,
     on_update: Option<OnUpdate<T>>,
@@ -57,7 +57,7 @@ where
     ) -> Self {
 
         WebsocketProgramAccountSubscriber {
-            _subscription_name: subscription_name,
+            subscription_name,
             url,
             options,
             on_update,
@@ -116,32 +116,42 @@ where
         let (unsub_tx, mut unsub_rx) = tokio::sync::mpsc::channel::<()>(1);
         
         self.unsubscriber = Some(unsub_tx);
+        let subscription_name = self.subscription_name.clone();
 
         tokio::spawn( async move {
             let (mut accounts, unsubscriber) = pubsub.program_subscribe(
                 &drift_program::ID,
                 Some(config)
             ).await.unwrap();
-
             loop {
                 tokio::select! {
-                    Some(message) = accounts.next() => {
-                        let slot = message.context.slot;
-                        if slot >= latest_slot {
-                            latest_slot = slot;
-                            let pubkey = message.value.pubkey;
-                            let account_data = message.value.account.data;
-                            let on_update_clone = on_update.clone();
-                            match Self::decode(account_data) {
-                                Ok(data) => {
-                                    let data_and_slot = DataAndSlot { slot, data };
-                                    if let Some(ref on_update_callback) = on_update_clone {
-                                        on_update_callback(event_emitter.clone(), pubkey, data_and_slot);
+                    message = accounts.next() => {
+                        match message {
+                            Some(message) => {
+                                let slot = message.context.slot;
+                                if slot >= latest_slot {
+                                    latest_slot = slot;
+                                    let pubkey = message.value.pubkey;
+                                    let account_data = message.value.account.data;
+                                    let on_update_clone = on_update.clone();
+                                    match Self::decode(account_data) {
+                                        Ok(data) => {
+                                            let data_and_slot = DataAndSlot { slot, data };
+                                            if let Some(ref on_update_callback) = on_update_clone {
+                                                on_update_callback(event_emitter.clone(), pubkey, data_and_slot);
+                                            }
+                                        },
+                                        Err(e) => {
+                                            error!("Error decoding account data {e}");
+                                        }
                                     }
-                                },
-                                Err(e) => {
-                                    error!("Error decoding account data {e}");
                                 }
+                            }
+                            None => {
+                                warn!("{} stream ended", subscription_name);
+                                let future = unsubscriber();
+                                future.await;
+                                break;
                             }
                         }
                     }
