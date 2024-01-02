@@ -51,6 +51,7 @@ use crate::constants::{
 
 pub mod constants;
 pub mod dlob;
+pub mod event_subscriber;
 pub mod types;
 use types::*;
 pub mod utils;

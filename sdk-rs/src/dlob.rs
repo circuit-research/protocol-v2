@@ -259,7 +259,7 @@ mod tests {
     use futures_util::StreamExt;
 
     use super::*;
-    use crate::{DriftClient, RpcAccountProvider};
+    use crate::{constants::MarketExt, types::Context, DriftClient, RpcAccountProvider};
 
     // this is my (frank) free helius endpoint
     const MAINNET_ENDPOINT: &str =
