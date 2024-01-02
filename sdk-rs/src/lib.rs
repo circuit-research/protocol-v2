@@ -3,7 +3,6 @@
 use std::{borrow::Cow, sync::Arc, time::Duration};
 
 use anchor_lang::{AccountDeserialize, Discriminator, InstructionData, ToAccountMetas};
-use constants::{derive_spot_market_account, market_lookup_table, state_account, ProgramData};
 use drift_program::{
     controller::position::PositionDirection,
     math::constants::QUOTE_SPOT_MARKET_INDEX,
@@ -44,6 +43,10 @@ use tokio::{
         RwLock,
     },
     time::Instant,
+};
+
+use crate::constants::{
+    derive_spot_market_account, market_lookup_table, state_account, MarketExt, ProgramData,
 };
 
 pub mod constants;
@@ -209,8 +212,11 @@ impl AccountProvider for WsAccountProvider {
 
 /// Drift Client API
 ///
-/// Cheaply clone-able
+/// It is cheaply clone-able and consumers are encouraged to do so
+/// It is not recommended to create multiple instances with `::new()` as this will not re-use underlying resources such
+/// as network connections or memory allocations
 #[derive(Clone)]
+#[must_use]
 pub struct DriftClient<T: AccountProvider> {
     backend: &'static DriftClientBackend<T>,
 }
@@ -222,6 +228,11 @@ impl<T: AccountProvider> DriftClient<T> {
                 DriftClientBackend::new(context, endpoint, account_provider).await?,
             )),
         })
+    }
+
+    /// Return on-chain program metadata
+    pub fn program_data<'a>(&'a self) -> &'a ProgramData {
+        &self.backend.program_data
     }
 
     /// Get an account's open order by id
@@ -365,21 +376,19 @@ impl<T: AccountProvider> DriftClient<T> {
     /// Returns None if symbol does not map to any known market
     pub fn market_lookup(&self, symbol: &str) -> Option<MarketId> {
         if symbol.contains('-') {
-            let markets = self.backend.program_data.perp_market_configs();
-            if let Some(market) = markets.iter().find(|m| {
-                unsafe { core::str::from_utf8_unchecked(&m.name) }
-                    .trim_end()
-                    .eq_ignore_ascii_case(symbol)
-            }) {
+            let markets = self.program_data().perp_market_configs();
+            if let Some(market) = markets
+                .iter()
+                .find(|m| m.symbol().eq_ignore_ascii_case(symbol))
+            {
                 return Some(MarketId::perp(market.market_index));
             }
         } else {
-            let markets = self.backend.program_data.spot_market_configs();
-            if let Some(market) = markets.iter().find(|m| {
-                unsafe { core::str::from_utf8_unchecked(&m.name) }
-                    .trim_end()
-                    .eq_ignore_ascii_case(symbol)
-            }) {
+            let markets = self.program_data().spot_market_configs();
+            if let Some(market) = markets
+                .iter()
+                .find(|m| m.symbol().eq_ignore_ascii_case(symbol))
+            {
                 return Some(MarketId::spot(market.market_index));
             }
         }
@@ -400,7 +409,7 @@ impl<T: AccountProvider> DriftClient<T> {
     pub async fn init_tx(&self, account: &Pubkey) -> SdkResult<TransactionBuilder> {
         let account_data = self.get_user_account(account).await?;
         Ok(TransactionBuilder::new(
-            &self.backend.program_data,
+            self.program_data(),
             *account,
             Cow::Owned(account_data),
         ))

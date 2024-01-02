@@ -1064,11 +1064,8 @@ name = "drift-sdk"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
-<<<<<<< HEAD
- "bytemuck",
-=======
  "base64 0.13.1",
->>>>>>> cargo-add-sdk
+ "bytemuck",
  "drift",
  "env_logger 0.10.1",
  "fnv",

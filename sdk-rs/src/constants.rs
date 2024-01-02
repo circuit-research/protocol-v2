@@ -45,39 +45,31 @@ pub fn derive_spot_market_account(market_index: u16) -> Pubkey {
     account
 }
 
-pub trait MarketConfig {
-    fn market_type(&self) -> &str;
-    fn symbol(&self) -> String;
+/// Helper methods for market data structs
+pub trait MarketExt {
+    fn market_type(&self) -> &'static str;
+    fn symbol<'a>(&'a self) -> &'a str;
 }
 
-impl MarketConfig for PerpMarket {
-    fn market_type(&self) -> &str {
+impl MarketExt for PerpMarket {
+    fn market_type(&self) -> &'static str {
         "perp"
     }
-
-    fn symbol(&self) -> String {
-        String::from_utf8(self.name.to_vec())
-            .unwrap_or_default()
-            .trim_end_matches('\0')
-            .trim()
-            .to_string()
+    fn symbol<'a>(&'a self) -> &'a str {
+        unsafe { core::str::from_utf8_unchecked(&self.name) }.trim_end()
     }
 }
 
-impl MarketConfig for SpotMarket {
-    fn market_type(&self) -> &str {
+impl MarketExt for SpotMarket {
+    fn market_type(&self) -> &'static str {
         "spot"
     }
-
-    fn symbol(&self) -> String {
-        String::from_utf8(self.name.to_vec())
-            .unwrap_or_default()
-            .trim_end_matches('\0')
-            .trim()
-            .to_string()
+    fn symbol<'a>(&'a self) -> &'a str {
+        unsafe { core::str::from_utf8_unchecked(&self.name) }.trim_end()
     }
 }
-/// Static-ish data from onchain drift program
+
+/// Static-ish metadata from onchain drift program
 pub struct ProgramData {
     spot_markets: &'static [SpotMarket],
     perp_markets: &'static [PerpMarket],

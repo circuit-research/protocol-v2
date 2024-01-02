@@ -6,10 +6,7 @@ use solana_sdk::{
     pubkey::Pubkey, signature::Keypair,
 };
 
-use crate::{
-    constants::MarketConfig,
-    types::{SdkError, SdkResult},
-};
+use crate::types::{SdkError, SdkResult};
 
 // kudos @wphan
 /// Try to parse secret `key` string
@@ -86,12 +83,16 @@ pub fn http_to_ws(url: &str) -> Result<String, &'static str> {
     Ok(format!("{}/ws", base_url.trim_end_matches('/')))
 }
 
-pub fn to_ws_json(config: &impl MarketConfig) -> String {
+pub fn dlob_subscribe_ws_json(market: &str) -> String {
     json!({
         "type": "subscribe",
-        "marketType": config.market_type(),
+        "marketType": if market.ends_with("perp") {
+            "perp"
+        } else {
+            "spot"
+        },
         "channel": "orderbook",
-        "market": config.symbol()
+        "market": market,
     })
     .to_string()
 }
