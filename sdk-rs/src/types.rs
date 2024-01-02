@@ -11,12 +11,15 @@ pub use drift_program::{
         user::{MarketType, Order, OrderType, PerpPosition, SpotPosition},
     },
 };
+use futures_util::sink::Sink;
 use solana_sdk::{
     instruction::{AccountMeta, InstructionError},
     pubkey::Pubkey,
     transaction::TransactionError,
 };
 use thiserror::Error;
+use tokio::net::TcpStream;
+use tokio_tungstenite::{tungstenite, MaybeTlsStream, WebSocketStream};
 
 pub type SdkResult<T> = Result<T, SdkError>;
 
@@ -147,6 +150,25 @@ impl NewOrder {
     }
 }
 
+#[derive(Debug)]
+pub struct SinkError(
+    pub <WebSocketStream<MaybeTlsStream<TcpStream>> as Sink<tungstenite::Message>>::Error,
+);
+
+impl std::fmt::Display for SinkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "WebSocket Sink Error: {}", self.0)
+    }
+}
+
+impl std::error::Error for SinkError {}
+
+impl From<SinkError> for SdkError {
+    fn from(err: SinkError) -> Self {
+        SdkError::SubscriptionFailure(err)
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum SdkError {
     #[error("{0}")]
@@ -169,6 +191,14 @@ pub enum SdkError {
     OutOfSOL,
     #[error("{0}")]
     Signing(#[from] solana_sdk::signer::SignerError),
+    #[error("WebSocket connection failed {0}")]
+    ConnectionError(#[from] tungstenite::Error),
+    #[error("Subscription failure: {0}")]
+    SubscriptionFailure(SinkError),
+    #[error("Received Error from websocket")]
+    WebsocketError,
+    #[error("Missed DLOB heartbeat")]
+    MissedHeartbeat,
 }
 
 impl SdkError {

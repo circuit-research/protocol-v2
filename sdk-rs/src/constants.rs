@@ -45,6 +45,38 @@ pub fn derive_spot_market_account(market_index: u16) -> Pubkey {
     account
 }
 
+pub trait MarketConfig {
+    fn market_type(&self) -> &str;
+    fn symbol(&self) -> String;
+}
+
+impl MarketConfig for PerpMarket {
+    fn market_type(&self) -> &str {
+        "perp"
+    }
+
+    fn symbol(&self) -> String {
+        String::from_utf8(self.name.to_vec())
+            .unwrap_or_default()
+            .trim_end_matches('\0')
+            .trim()
+            .to_string()
+    }
+}
+
+impl MarketConfig for SpotMarket {
+    fn market_type(&self) -> &str {
+        "spot"
+    }
+
+    fn symbol(&self) -> String {
+        String::from_utf8(self.name.to_vec())
+            .unwrap_or_default()
+            .trim_end_matches('\0')
+            .trim()
+            .to_string()
+    }
+}
 /// Static-ish data from onchain drift program
 pub struct ProgramData {
     spot_markets: &'static [SpotMarket],

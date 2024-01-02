@@ -510,7 +510,7 @@ impl<T: AccountProvider> DriftClientBackend<T> {
             .iter()
             .map(|(_, account_data)| {
                 U::try_deserialize(&mut account_data.data.as_ref())
-                    .map_err(|err| Box::new(err).into())
+                    .map_err(|err| SdkError::Anchor(Box::new(err)))
             })
             .collect()
     }

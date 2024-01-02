@@ -1,11 +1,15 @@
 //! SDK utility functions
 
+use serde_json::json;
 use solana_sdk::{
     account::Account, address_lookup_table_account::AddressLookupTableAccount, bs58,
     pubkey::Pubkey, signature::Keypair,
 };
 
-use crate::types::{SdkError, SdkResult};
+use crate::{
+    constants::MarketConfig,
+    types::{SdkError, SdkResult},
+};
 
 // kudos @wphan
 /// Try to parse secret `key` string
@@ -27,10 +31,16 @@ pub fn read_keypair_str_multi_format(key: &str) -> SdkResult<Keypair> {
     }
 
     // try to decode as base58 string
-    let bytes = bs58::decode(key)
-        .into_vec()
-        .map_err(|_| SdkError::InvalidBase58)?;
-    Keypair::from_bytes(&bytes).map_err(|_| SdkError::InvalidSeed)
+    if let Ok(bytes) = bs58::decode(key.as_bytes()).into_vec() {
+        return Keypair::from_bytes(&bytes).map_err(|_| SdkError::InvalidSeed);
+    }
+
+    // try to decode as base64 string
+    if let Ok(bytes) = base64::decode(key.as_bytes()) {
+        return Keypair::from_bytes(&bytes).map_err(|_| SdkError::InvalidSeed);
+    }
+
+    Err(SdkError::InvalidSeed)
 }
 
 /// Try load a `Keypair` from a file path or given string, supports json format and base58 format.
@@ -64,6 +74,28 @@ pub fn deserialize_alt(address: Pubkey, account: &Account) -> SdkResult<AddressL
     })
 }
 
+pub fn http_to_ws(url: &str) -> Result<String, &'static str> {
+    let base_url = if url.starts_with("http://") {
+        url.replacen("http://", "ws://", 1)
+    } else if url.starts_with("https://") {
+        url.replacen("https://", "wss://", 1)
+    } else {
+        return Err("Invalid URL scheme");
+    };
+
+    Ok(format!("{}/ws", base_url.trim_end_matches('/')))
+}
+
+pub fn to_ws_json(config: &impl MarketConfig) -> String {
+    json!({
+        "type": "subscribe",
+        "marketType": config.market_type(),
+        "channel": "orderbook",
+        "market": config.symbol()
+    })
+    .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use solana_sdk::signer::Signer;
@@ -92,5 +124,21 @@ mod tests {
 
         let keypair = read_keypair_str_multi_format(keypair_data).unwrap();
         assert!(keypair.pubkey().to_string() == "EtiM5qwcrrawQP9FfRErBatNvDgEU656tk5aA8iTgqri");
+    }
+
+    #[test]
+    fn test_keypair_from_base64_string() {
+        let keypair_data = "EbxpSbYDOH2dFAxSWMW1yvv4YWfXpemRcv4UWWRPz6jOZ006117Em+B0SUo+yB74ZWakfgaqTb66jmveA/KPmw==";
+
+        let keypair = read_keypair_str_multi_format(keypair_data).unwrap();
+        assert!(keypair.pubkey().to_string() == "EtiM5qwcrrawQP9FfRErBatNvDgEU656tk5aA8iTgqri");
+    }
+
+    #[test]
+    fn test_https_to_ws() {
+        let https_url = "https://dlob.drift.trade";
+        assert!(http_to_ws(https_url).unwrap() == "wss://dlob.drift.trade/ws");
+        let http_url = "http://dlob.drift.trade";
+        assert!(http_to_ws(http_url).unwrap() == "ws://dlob.drift.trade/ws")
     }
 }
