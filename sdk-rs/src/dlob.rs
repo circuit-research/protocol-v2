@@ -1,5 +1,7 @@
+// Standard Library Imports
 use std::{task::Poll, time::Duration};
 
+// External Crate Imports
 use drift_program::state::user::MarketType;
 use futures_util::{SinkExt, Stream, StreamExt};
 use log::{error, info};
@@ -282,7 +284,7 @@ mod tests {
         let stream = client.subscribe_l2_book(MarketId::perp(0), None);
         let mut short_stream = stream.take(5);
         while let Some(book) = short_stream.next().await {
-            dbg!(book);
+            let _ = dbg!(book);
         }
     }
 
@@ -303,7 +305,7 @@ mod tests {
         let stream = client.subscribe_l3_book(MarketId::perp(0), None);
         let mut short_stream = stream.take(5);
         while let Some(book) = short_stream.next().await {
-            dbg!(book);
+            let _ = dbg!(book);
         }
     }
 
@@ -313,6 +315,7 @@ mod tests {
             Context::MainNet,
             MAINNET_ENDPOINT,
             RpcAccountProvider::new(MAINNET_ENDPOINT),
+            None,
         )
         .await
         .unwrap();
