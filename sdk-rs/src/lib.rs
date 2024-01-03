@@ -222,21 +222,14 @@ impl AccountProvider for WsAccountProvider {
 #[must_use]
 pub struct DriftClient<T: AccountProvider> {
     backend: &'static DriftClientBackend<T>,
-    active_sub_account_id: u16,
 }
 
 impl<T: AccountProvider> DriftClient<T> {
-    pub async fn new(
-        context: Context,
-        endpoint: &str,
-        account_provider: T,
-        active_sub_account_id: Option<u16>,
-    ) -> SdkResult<Self> {
+    pub async fn new(context: Context, endpoint: &str, account_provider: T) -> SdkResult<Self> {
         Ok(Self {
             backend: Box::leak(Box::new(
                 DriftClientBackend::new(context, endpoint, account_provider).await?,
             )),
-            active_sub_account_id: active_sub_account_id.unwrap_or(0),
         })
     }
 
@@ -423,14 +416,6 @@ impl<T: AccountProvider> DriftClient<T> {
             *account,
             Cow::Owned(account_data),
         ))
-    }
-
-    pub fn get_sub_account_id_for_ix(&self, sub_account_id: Option<u16>) -> u16 {
-        return if sub_account_id.is_some() {
-            sub_account_id.unwrap()
-        } else {
-            self.active_sub_account_id
-        };
     }
 }
 
