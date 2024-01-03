@@ -28,17 +28,15 @@ pub type L3OrderbookStream = RxStream<Result<L3Orderbook, SdkError>>;
 #[derive(Clone)]
 /// Decentralized limit orderbook client
 pub struct DLOBClient {
-    context: Context,
     url: String,
     client: Client,
 }
 
 impl DLOBClient {
-    pub fn new(url: &str, context: Context) -> Self {
+    pub fn new(url: &str) -> Self {
         let url = url.trim_end_matches('/');
 
         Self {
-            context,
             url: url.to_string(),
             client: Client::new(),
         }
@@ -263,11 +261,7 @@ mod tests {
     use futures_util::StreamExt;
 
     use super::*;
-    use crate::{DriftClient, RpcAccountProvider};
-
-    // this is my (frank) free helius endpoint
-    const MAINNET_ENDPOINT: &str =
-        "https://mainnet.helius-rpc.com/?api-key=3a1ca16d-e181-4755-9fe7-eac27579b48c";
+    use crate::{constants::MarketExt, types::Context, DriftClient, RpcAccountProvider};
 
     // this is my (frank) free helius endpoint
     const MAINNET_ENDPOINT: &str =
@@ -276,7 +270,7 @@ mod tests {
     #[tokio::test]
     async fn pull_l2_book() {
         let url = "https://dlob.drift.trade";
-        let client = DLOBClient::new(url, Context::MainNet);
+        let client = DLOBClient::new(url);
         let perp_book = client.get_l2(MarketId::perp(0)).await.unwrap();
         dbg!(perp_book);
         let spot_book = client.get_l2(MarketId::spot(2)).await.unwrap();
@@ -286,7 +280,7 @@ mod tests {
     #[tokio::test]
     async fn stream_l2_book() {
         let url = "https://dlob.drift.trade";
-        let client = DLOBClient::new(url, Context::MainNet);
+        let client = DLOBClient::new(url);
         let stream = client.subscribe_l2_book(MarketId::perp(0), None);
         let mut short_stream = stream.take(5);
         while let Some(book) = short_stream.next().await {
@@ -297,7 +291,7 @@ mod tests {
     #[tokio::test]
     async fn pull_l3_book() {
         let url = "https://dlob.drift.trade";
-        let client = DLOBClient::new(url, Context::MainNet);
+        let client = DLOBClient::new(url);
         let perp_book = client.get_l3(MarketId::perp(0)).await.unwrap();
         dbg!(perp_book);
         let spot_book = client.get_l3(MarketId::spot(2)).await.unwrap();
@@ -307,29 +301,8 @@ mod tests {
     #[tokio::test]
     async fn stream_l3_book() {
         let url = "https://dlob.drift.trade";
-        let client = DLOBClient::new(url, Context::MainNet);
+        let client = DLOBClient::new(url);
         let stream = client.subscribe_l3_book(MarketId::perp(0), None);
-        let mut short_stream = stream.take(5);
-        while let Some(book) = short_stream.next().await {
-            let _ = dbg!(book);
-        }
-    }
-
-    #[tokio::test]
-    async fn subscribe_ws() {
-        env_logger::init();
-        let _ = DriftClient::new(
-            Context::MainNet,
-            MAINNET_ENDPOINT,
-            RpcAccountProvider::new(MAINNET_ENDPOINT),
-            None,
-        )
-        .await
-        .unwrap();
-        let url = "https://dlob.drift.trade";
-        let client = DLOBClient::new(url, Context::MainNet);
-        let market = MarketId::perp(0);
-        let stream = client.subscribe_ws(market).await.unwrap();
         let mut short_stream = stream.take(5);
         while let Some(book) = short_stream.next().await {
             let _ = dbg!(book);
@@ -342,6 +315,7 @@ mod tests {
             Context::MainNet,
             MAINNET_ENDPOINT,
             RpcAccountProvider::new(MAINNET_ENDPOINT),
+            None,
         )
         .await
         .unwrap();

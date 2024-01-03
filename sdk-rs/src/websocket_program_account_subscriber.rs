@@ -1,12 +1,9 @@
-// Standard Library Imports
 use std::sync::{Arc, Mutex};
 
-// External Crate Imports
 use anchor_lang::AccountDeserialize;
-use base64::{engine::general_purpose, Engine as _};
 use events_emitter::EventEmitter;
 use futures_util::StreamExt;
-use log::{error, warn};
+use log::{debug, error, warn};
 use solana_account_decoder::{UiAccountData, UiAccountEncoding};
 use solana_client::{
     nonblocking::pubsub_client::PubsubClient,
@@ -15,8 +12,7 @@ use solana_client::{
 };
 use solana_sdk::commitment_config::CommitmentConfig;
 
-// Internal Crate/Module Imports
-use crate::types::{DataAndSlot, SdkResult};
+use crate::types::{DataAndSlot, SdkError, SdkResult};
 
 pub type OnUpdate<T> =
     Arc<dyn Fn(Option<SafeEventEmitter<T>>, String, DataAndSlot<T>) + Send + Sync>;
@@ -71,15 +67,13 @@ where
     fn decode(data: UiAccountData) -> SdkResult<T> {
         let data_str = match data {
             UiAccountData::Binary(encoded, _) => encoded,
-            _ => return Err(crate::types::SdkError::UnsupportedAccountData),
+            _ => return Err(SdkError::UnsupportedAccountData),
         };
 
-        let decoded_data = general_purpose::STANDARD.decode(data_str)?;
+        let decoded_data = base64::decode(data_str)?;
         let mut decoded_data_slice = decoded_data.as_slice();
 
-        let result = T::try_deserialize(&mut decoded_data_slice)?;
-
-        Ok(result)
+        T::try_deserialize(&mut decoded_data_slice).map_err(|err| SdkError::Anchor(Box::new(err)))
     }
 
     pub async fn subscribe(&mut self) -> SdkResult<()> {
@@ -118,6 +112,7 @@ where
         let subscription_name = self.subscription_name.clone();
 
         tokio::spawn(async move {
+            let on_update_ref = on_update.as_ref();
             let (mut accounts, unsubscriber) = pubsub
                 .program_subscribe(&drift_program::ID, Some(config))
                 .await
@@ -132,11 +127,10 @@ where
                                     latest_slot = slot;
                                     let pubkey = message.value.pubkey;
                                     let account_data = message.value.account.data;
-                                    let on_update_clone = on_update.clone();
                                     match Self::decode(account_data) {
                                         Ok(data) => {
                                             let data_and_slot = DataAndSlot { slot, data };
-                                            if let Some(ref on_update_callback) = on_update_clone {
+                                            if let Some(on_update_callback) = on_update_ref {
                                                 on_update_callback(event_emitter.clone(), pubkey, data_and_slot);
                                             }
                                         },
@@ -148,16 +142,14 @@ where
                             }
                             None => {
                                 warn!("{} stream ended", subscription_name);
-                                let future = unsubscriber();
-                                future.await;
+                                unsubscriber().await;
                                 break;
                             }
                         }
                     }
                     _ = unsub_rx.recv() => {
-                        println!("Unsubscribing.");
-                        let future = unsubscriber();
-                        future.await;
+                        debug!("Unsubscribing.");
+                        unsubscriber().await;
                         break;
                     }
                 }
@@ -169,9 +161,9 @@ where
 
     pub async fn unsubscribe(&mut self) -> SdkResult<()> {
         if self.subscribed && self.unsubscriber.is_some() {
-            if let Err(e) = self.unsubscriber.clone().unwrap().send(()).await {
-                eprintln!("Failed to send unsubscribe signal: {:?}", e);
-                return Err(crate::types::SdkError::CouldntUnsubscribe(e));
+            if let Err(e) = self.unsubscriber.as_ref().unwrap().send(()).await {
+                error!("Failed to send unsubscribe signal: {:?}", e);
+                return Err(SdkError::CouldntUnsubscribe(e));
             }
             self.subscribed = false;
         }
@@ -196,7 +188,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_subscribe() {
-        env_logger::init();
         let filters = vec![get_user_filter(), get_non_idle_user_filter()];
         let commitment = CommitmentConfig::confirmed();
         let options = WebsocketProgramAccountOptions {
@@ -232,11 +223,9 @@ mod tests {
         );
 
         let _ = ws_subscriber.subscribe().await;
-
+        dbg!("sub'd");
         tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-
         let _ = ws_subscriber.unsubscribe().await;
-
-        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+        dbg!("unsub'd");
     }
 }

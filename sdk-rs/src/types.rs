@@ -21,8 +21,6 @@ use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{tungstenite, MaybeTlsStream, WebSocketStream};
 
-use crate::constants::{perp_market_configs, spot_market_configs};
-
 pub type SdkResult<T> = Result<T, SdkError>;
 
 /// Drift program context

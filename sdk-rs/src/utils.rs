@@ -6,10 +6,7 @@ use solana_sdk::{
     pubkey::Pubkey, signature::Keypair,
 };
 
-use crate::{
-    constants::MarketConfig,
-    types::{SdkError, SdkResult},
-};
+use crate::types::{SdkError, SdkResult};
 
 // kudos @wphan
 /// Try to parse secret `key` string
