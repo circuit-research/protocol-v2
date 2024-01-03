@@ -11,17 +11,15 @@ pub use drift_program::{
         user::{MarketType, Order, OrderType, PerpPosition, SpotPosition},
     },
 };
+use futures_util::sink::Sink;
 use solana_sdk::{
     instruction::{AccountMeta, InstructionError},
     pubkey::Pubkey,
     transaction::TransactionError,
 };
 use thiserror::Error;
-use tokio_tungstenite::tungstenite;
-use futures_util::sink::Sink;
-use tokio_tungstenite::{WebSocketStream, MaybeTlsStream};
 use tokio::net::TcpStream;
-
+use tokio_tungstenite::{tungstenite, MaybeTlsStream, WebSocketStream};
 
 use crate::constants::{perp_market_configs, spot_market_configs};
 
@@ -40,7 +38,7 @@ pub enum Context {
 #[derive(Debug, Clone)]
 pub struct DataAndSlot<T> {
     pub slot: u64,
-    pub data: T
+    pub data: T,
 }
 
 /// Id of a Drift market
@@ -51,33 +49,6 @@ pub struct MarketId {
 }
 
 impl MarketId {
-    /// Lookup a market id by context and symbol
-    ///
-    /// This operation is not free so lookups should be reused/cached by the caller
-    ///
-    /// Returns an error if symbol and context do not map to a known market
-    pub fn lookup(context: Context, symbol: &str) -> Result<Self, ()> {
-        if symbol.contains('-') {
-            let markets = perp_market_configs(context);
-            if let Some(market) = markets.iter().find(|m| {
-                unsafe { core::str::from_utf8_unchecked(&m.name) }
-                    .trim_end()
-                    .eq_ignore_ascii_case(symbol)
-            }) {
-                return Ok(MarketId::perp(market.market_index));
-            }
-        } else {
-            let markets = spot_market_configs(context);
-            if let Some(market) = markets.iter().find(|m| {
-                unsafe { core::str::from_utf8_unchecked(&m.name) }
-                    .trim_end()
-                    .eq_ignore_ascii_case(symbol)
-            }) {
-                return Ok(MarketId::spot(market.market_index));
-            }
-        }
-        Err(())
-    }
     /// Id of a perp market
     pub const fn perp(index: u16) -> Self {
         Self {
@@ -188,7 +159,9 @@ impl NewOrder {
 }
 
 #[derive(Debug)]
-pub struct SinkError(pub <WebSocketStream<MaybeTlsStream<TcpStream>> as Sink<tungstenite::Message>>::Error);
+pub struct SinkError(
+    pub <WebSocketStream<MaybeTlsStream<TcpStream>> as Sink<tungstenite::Message>>::Error,
+);
 
 impl std::fmt::Display for SinkError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -203,6 +176,7 @@ impl From<SinkError> for SdkError {
         SdkError::SubscriptionFailure(err)
     }
 }
+
 #[derive(Debug, Error)]
 pub enum SdkError {
     #[error("{0}")]
@@ -212,7 +186,7 @@ pub enum SdkError {
     #[error("{0}")]
     Ws(#[from] solana_client::nonblocking::pubsub_client::PubsubClientError),
     #[error("{0}")]
-    Anchor(#[from] anchor_lang::error::Error),
+    Anchor(#[from] Box<anchor_lang::error::Error>),
     #[error("error while deserializing")]
     Deserializing,
     #[error("invalid drift account")]
@@ -223,6 +197,8 @@ pub enum SdkError {
     InvalidBase58,
     #[error("insufficient SOL balance for fees")]
     OutOfSOL,
+    #[error("{0}")]
+    Signing(#[from] solana_sdk::signer::SignerError),
     #[error("WebSocket connection failed {0}")]
     ConnectionError(#[from] tungstenite::Error),
     #[error("Subscription failure: {0}")]
@@ -377,7 +353,7 @@ mod tests {
         instruction::InstructionError, pubkey::Pubkey, transaction::TransactionError,
     };
 
-    use super::{Context, MarketId, RemainingAccount, SdkError};
+    use super::{RemainingAccount, SdkError};
 
     #[test]
     fn extract_anchor_error() {
@@ -406,30 +382,6 @@ mod tests {
             err.to_anchor_error_code().unwrap(),
             ErrorCode::UserOrderIdAlreadyInUse,
         );
-    }
-
-    #[test]
-    fn market_id_lookups() {
-        for (context, symbol, expected) in &[
-            (Context::DevNet, "wBTC", MarketId::spot(2)),
-            (Context::DevNet, "SOL", MarketId::spot(1)),
-            (Context::DevNet, "sol-perp", MarketId::perp(0)),
-            (Context::MainNet, "wbtc", MarketId::spot(3)),
-            (Context::MainNet, "SOL", MarketId::spot(1)),
-            (Context::MainNet, "sol-perp", MarketId::perp(0)),
-            (Context::MainNet, "eth-perp", MarketId::perp(2)),
-        ] {
-            dbg!(context, symbol);
-            assert_eq!(MarketId::lookup(*context, symbol).unwrap(), *expected,);
-        }
-
-        for (context, symbol) in &[
-            (Context::MainNet, "market404"),
-            (Context::MainNet, "market404-perp"),
-            (Context::MainNet, "market404-something"),
-        ] {
-            assert!(MarketId::lookup(*context, symbol).is_err())
-        }
     }
 
     #[test]

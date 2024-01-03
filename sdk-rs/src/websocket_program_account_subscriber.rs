@@ -18,8 +18,8 @@ use solana_sdk::commitment_config::CommitmentConfig;
 // Internal Crate/Module Imports
 use crate::types::{DataAndSlot, SdkResult};
 
-
-pub type OnUpdate<T> = Arc<dyn Fn(Option<SafeEventEmitter<T>>, String, DataAndSlot<T>) + Send + Sync>;
+pub type OnUpdate<T> =
+    Arc<dyn Fn(Option<SafeEventEmitter<T>>, String, DataAndSlot<T>) + Send + Sync>;
 
 pub type SafeEventEmitter<T> = Arc<Mutex<EventEmitter<(String, DataAndSlot<T>)>>>;
 
@@ -30,7 +30,7 @@ pub struct WebsocketProgramAccountOptions {
 }
 
 pub struct WebsocketProgramAccountSubscriber<T>
-where 
+where
     T: AccountDeserialize + core::fmt::Debug + 'static,
 {
     subscription_name: String,
@@ -40,11 +40,11 @@ where
     _resub_timeout_ms: Option<u64>,
     pub subscribed: bool,
     event_emitter: Option<SafeEventEmitter<T>>,
-    unsubscriber: Option<tokio::sync::mpsc::Sender<()>>
+    unsubscriber: Option<tokio::sync::mpsc::Sender<()>>,
 }
 
 impl<T> WebsocketProgramAccountSubscriber<T>
-where 
+where
     T: AccountDeserialize + core::fmt::Debug + 'static,
 {
     pub fn new(
@@ -53,16 +53,15 @@ where
         options: WebsocketProgramAccountOptions,
         on_update: Option<OnUpdate<T>>,
         event_emitter: Option<SafeEventEmitter<T>>,
-        resub_timeout_ms: Option<u64>
+        resub_timeout_ms: Option<u64>,
     ) -> Self {
-
         WebsocketProgramAccountSubscriber {
             subscription_name,
             url,
             options,
             on_update,
             _resub_timeout_ms: resub_timeout_ms,
-            subscribed: false, 
+            subscribed: false,
             event_emitter,
             unsubscriber: None,
         }
@@ -72,7 +71,7 @@ where
     fn decode(data: UiAccountData) -> SdkResult<T> {
         let data_str = match data {
             UiAccountData::Binary(encoded, _) => encoded,
-            _ => return Err(crate::types::SdkError::UnsupportedAccountData)
+            _ => return Err(crate::types::SdkError::UnsupportedAccountData),
         };
 
         let decoded_data = general_purpose::STANDARD.decode(data_str)?;
@@ -114,15 +113,15 @@ where
         let event_emitter = self.event_emitter.clone();
 
         let (unsub_tx, mut unsub_rx) = tokio::sync::mpsc::channel::<()>(1);
-        
+
         self.unsubscriber = Some(unsub_tx);
         let subscription_name = self.subscription_name.clone();
 
-        tokio::spawn( async move {
-            let (mut accounts, unsubscriber) = pubsub.program_subscribe(
-                &drift_program::ID,
-                Some(config)
-            ).await.unwrap();
+        tokio::spawn(async move {
+            let (mut accounts, unsubscriber) = pubsub
+                .program_subscribe(&drift_program::ID, Some(config))
+                .await
+                .unwrap();
             loop {
                 tokio::select! {
                     message = accounts.next() => {
@@ -172,7 +171,7 @@ where
         if self.subscribed && self.unsubscriber.is_some() {
             if let Err(e) = self.unsubscriber.clone().unwrap().send(()).await {
                 eprintln!("Failed to send unsubscribe signal: {:?}", e);
-                return Err(crate::types::SdkError::CouldntUnsubscribe(e)); 
+                return Err(crate::types::SdkError::CouldntUnsubscribe(e));
             }
             self.subscribed = false;
         }
@@ -183,14 +182,17 @@ where
 #[cfg(test)]
 mod tests {
 
-    use super::*;
-    use crate::memcmp::{get_user_filter, get_non_idle_user_filter};
-    use anchor_client::Cluster;
     use std::str::FromStr;
+
+    use anchor_client::Cluster;
     use drift_program::state::user::User;
 
+    use super::*;
+    use crate::memcmp::{get_non_idle_user_filter, get_user_filter};
+
     // this is my (frank) free helius endpoint
-    const MAINNET_ENDPOINT: &str = "https://mainnet.helius-rpc.com/?api-key=3a1ca16d-e181-4755-9fe7-eac27579b48c";
+    const MAINNET_ENDPOINT: &str =
+        "https://mainnet.helius-rpc.com/?api-key=3a1ca16d-e181-4755-9fe7-eac27579b48c";
 
     #[tokio::test]
     async fn test_subscribe() {
@@ -200,20 +202,24 @@ mod tests {
         let options = WebsocketProgramAccountOptions {
             filters,
             commitment,
-            encoding: UiAccountEncoding::Base64
+            encoding: UiAccountEncoding::Base64,
         };
         let cluster = Cluster::from_str(MAINNET_ENDPOINT).unwrap();
         let url = cluster.ws_url().to_string();
         let resub_timeout_ms = 10_000;
         let subscription_name = "Test".to_string();
 
-        fn on_update(_emitter: Option<SafeEventEmitter<User>>, pubkey: String, data: DataAndSlot<User>) {
+        fn on_update(
+            _emitter: Option<SafeEventEmitter<User>>,
+            pubkey: String,
+            data: DataAndSlot<User>,
+        ) {
             dbg!(pubkey);
             dbg!(data);
         }
 
         let on_update_fn: OnUpdate<User> = Arc::new(move |emitter, s, d| {
-            on_update(emitter, s, d); 
+            on_update(emitter, s, d);
         });
 
         let mut ws_subscriber = WebsocketProgramAccountSubscriber::new(
@@ -222,7 +228,7 @@ mod tests {
             options,
             Some(on_update_fn),
             None,
-            Some(resub_timeout_ms)
+            Some(resub_timeout_ms),
         );
 
         let _ = ws_subscriber.subscribe().await;

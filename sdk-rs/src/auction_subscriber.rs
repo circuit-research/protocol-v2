@@ -12,14 +12,14 @@ use crate::{
     memcmp::{get_user_filter, get_user_with_auction_filter},
     types::{DataAndSlot, SdkResult},
     websocket_program_account_subscriber::{
-        OnUpdate, SafeEventEmitter, WebsocketProgramAccountOptions, 
-        WebsocketProgramAccountSubscriber
+        OnUpdate, SafeEventEmitter, WebsocketProgramAccountOptions,
+        WebsocketProgramAccountSubscriber,
     },
 };
 
 pub struct AuctionSubscriberConfig {
     pub commitment: CommitmentConfig,
-    pub resub_timeout_ms: Option<u64>,    
+    pub resub_timeout_ms: Option<u64>,
     pub url: String,
 }
 
@@ -29,21 +29,20 @@ pub struct AuctionSubscriber {
 }
 
 impl AuctionSubscriber {
-    pub fn new(
-        config: AuctionSubscriberConfig,        
-    ) -> Self {
+    pub fn new(config: AuctionSubscriberConfig) -> Self {
         let safe_event_emitter: SafeEventEmitter<User> = Arc::new(Mutex::new(EventEmitter::new()));
-        
-        let on_update_fn: OnUpdate<User> = Arc::new(move |emitter, s: String, d: DataAndSlot<User>| {
-            Self::on_update(emitter, s, d); 
-        });
+
+        let on_update_fn: OnUpdate<User> =
+            Arc::new(move |emitter, s: String, d: DataAndSlot<User>| {
+                Self::on_update(emitter, s, d);
+            });
 
         let filters = vec![get_user_filter(), get_user_with_auction_filter()];
 
         let websocket_options = WebsocketProgramAccountOptions {
             filters,
             commitment: config.commitment,
-            encoding: UiAccountEncoding::Base64
+            encoding: UiAccountEncoding::Base64,
         };
 
         let subscriber = WebsocketProgramAccountSubscriber::new(
@@ -52,7 +51,7 @@ impl AuctionSubscriber {
             websocket_options,
             Some(on_update_fn),
             Some(Arc::clone(&safe_event_emitter)),
-            config.resub_timeout_ms
+            config.resub_timeout_ms,
         );
 
         AuctionSubscriber {
@@ -64,17 +63,17 @@ impl AuctionSubscriber {
     fn on_update(emitter: Option<SafeEventEmitter<User>>, pubkey: String, data: DataAndSlot<User>) {
         if let Some(emitter) = emitter.clone() {
             let mut emitter = emitter.lock().unwrap();
-            emitter.emit("Auction",&(pubkey, data));
+            emitter.emit("Auction", &(pubkey, data));
         }
     }
 
     pub async fn subscribe(&mut self) -> SdkResult<()> {
         if self.subscriber.subscribed {
-            return Ok(())
+            return Ok(());
         }
 
         self.subscriber.subscribe().await?;
-        
+
         Ok(())
     }
 
@@ -85,22 +84,23 @@ impl AuctionSubscriber {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use anchor_client::Cluster;
     use std::str::FromStr;
 
+    use anchor_client::Cluster;
+
+    use super::*;
+
     // this is my (frank) free helius endpoint
-    const MAINNET_ENDPOINT: &str = "https://mainnet.helius-rpc.com/?api-key=3a1ca16d-e181-4755-9fe7-eac27579b48c";
+    const MAINNET_ENDPOINT: &str =
+        "https://mainnet.helius-rpc.com/?api-key=3a1ca16d-e181-4755-9fe7-eac27579b48c";
 
     #[tokio::test]
     async fn test_auction_subscriber() {
-
         let cluster = Cluster::from_str(MAINNET_ENDPOINT).unwrap();
         let url = cluster.ws_url().to_string();
-        
+
         let config = AuctionSubscriberConfig {
             commitment: CommitmentConfig::confirmed(),
             resub_timeout_ms: None,
