@@ -5,22 +5,27 @@ use std::{
 };
 
 use anchor_lang::{AnchorDeserialize, Discriminator};
-use drift_program::state::events::OrderActionRecord;
+use drift_program::{
+    controller::position::PositionDirection,
+    state::{
+        events::{OrderAction, OrderActionExplanation, OrderActionRecord, OrderRecord},
+        user::{MarketType, Order},
+    },
+};
 use futures_util::{future::BoxFuture, stream::FuturesOrdered, FutureExt, Stream, StreamExt};
-use log::debug;
+use log::{debug, error};
 use solana_client::{
     nonblocking::rpc_client::RpcClient, rpc_client::GetConfirmedSignaturesForAddress2Config,
 };
-use solana_sdk::{
-    commitment_config::CommitmentConfig, pubkey::Pubkey, signature::Signature,
-    transaction::VersionedTransaction,
-};
+use solana_sdk::{pubkey::Pubkey, signature::Signature, transaction::VersionedTransaction};
 use solana_transaction_status::{
     option_serializer::OptionSerializer, EncodedTransactionWithStatusMeta, UiTransactionEncoding,
 };
 use tokio::sync::mpsc::{channel, Receiver};
 
 use crate::{constants, types::SdkResult};
+
+const LOG_TARGET: &str = "events";
 
 impl EventRpcProvider for RpcClient {
     fn get_tx(
@@ -33,8 +38,8 @@ impl EventRpcProvider for RpcClient {
                     &signature,
                     solana_client::rpc_config::RpcTransactionConfig {
                         encoding: Some(UiTransactionEncoding::Base64),
-                        commitment: Some(CommitmentConfig::confirmed()),
-                        max_supported_transaction_version: None,
+                        max_supported_transaction_version: Some(0),
+                        ..Default::default()
                     },
                 )
                 .await?;
@@ -124,23 +129,38 @@ impl DriftEventStream {
 
         // spawn the event subscription task
         tokio::spawn(async move {
-            let mut last_seen_tx = Option::<Signature>::None;
-            let mut futs = FuturesOrdered::new();
+            // poll for events in any tx after this tx
+            // initially fetch the most recent tx from account
+            let mut last_seen_tx = provider
+                .get_tx_signatures(account, None, Some(1))
+                .await
+                .expect("fetched tx")
+                .first()
+                .cloned();
 
             loop {
-                // TODO: on first start up should only consider events newer than current timestamp
                 let signatures = provider
-                    .get_tx_signatures(account, last_seen_tx, Some(5))
+                    .get_tx_signatures(account, last_seen_tx, Some(16))
                     .await
-                    .unwrap();
-                // process in LIFO order
-                for sig in signatures {
-                    futs.push_front(async move { (sig, provider.get_tx(sig).await) });
-                }
+                    .expect("fetched txs");
 
-                // TODO: handle error/retry
-                while let Some((sig, Ok(response))) = futs.next().await {
-                    let _ = last_seen_tx.insert(sig);
+                // txs from RPC are ordered newest to oldest
+                // process in reverse order, so subscribers receive events in chronological order
+                let mut futs = FuturesOrdered::from_iter(
+                    signatures
+                        .into_iter()
+                        .map(|s| async move { (s, provider.get_tx(s).await) })
+                        .rev(),
+                );
+
+                while let Some((sig, response)) = futs.next().await {
+                    // TODO: on RPC error should attempt to re-query the tx
+                    last_seen_tx = Some(sig);
+                    if let Err(err) = response {
+                        error!(target: LOG_TARGET, "processing tx: {err:?}");
+                        continue;
+                    }
+                    let response = response.unwrap();
                     if response.meta.is_none() {
                         continue;
                     }
@@ -159,9 +179,13 @@ impl DriftEventStream {
 
                     if let OptionSerializer::Some(logs) = response.meta.unwrap().log_messages {
                         for log in logs {
-                            try_parse_log(log.as_str()).map(|e| {
-                                event_tx.try_send(e).expect("capacity");
-                            });
+                            // TODO: need some awareness here to populate prior event with subsequently parsed events
+                            // e.g. place order OAR is followed by the OrderRecord
+                            // want to emit a single event with all the info..
+                            let event = try_parse_log(log.as_str());
+                            if let Some(event) = event {
+                                event_tx.try_send(event).expect("sent");
+                            }
                         }
                     }
                 }
@@ -181,26 +205,6 @@ impl Stream for DriftEventStream {
         cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         self.as_mut().0.poll_recv(cx)
-    }
-}
-
-pub enum DriftEvent {
-    OAR(OrderActionRecord),
-}
-
-impl DriftEvent {
-    /// Deserialize drift event by discriminant
-    fn from_discriminant(disc: [u8; 8], data: &mut &[u8]) -> Option<Self> {
-        match disc {
-            // deser should only fail on a breaking protocol change
-            OrderActionRecord::DISCRIMINATOR => Some(Self::OAR(
-                OrderActionRecord::deserialize(data).expect("deserializes"),
-            )),
-            _ => {
-                debug!("unhandled event: {disc:?}");
-                None
-            }
-        }
     }
 }
 
@@ -226,22 +230,130 @@ fn try_parse_log(raw: &str) -> Option<DriftEvent> {
     None
 }
 
+/// Enum of all drift program events
+#[derive(Debug, PartialEq)]
+pub enum DriftEvent {
+    OrderFill {
+        maker: Option<Pubkey>,
+        maker_fee: i64,
+        maker_order_id: u32,
+        maker_side: Option<PositionDirection>,
+        taker: Option<Pubkey>,
+        taker_fee: u64,
+        taker_order_id: u32,
+        taker_side: Option<PositionDirection>,
+        base_asset_amount_filled: u64,
+        market_index: u16,
+        market_type: MarketType,
+        ts: u64,
+    },
+    OrderCancel {
+        taker: Option<Pubkey>,
+        maker: Option<Pubkey>,
+        taker_order_id: u32,
+        maker_order_id: u32,
+        ts: u64,
+    },
+    OrderCreate {
+        order: Order,
+        ts: u64,
+    },
+    // sub-case of cancel?
+    OrderExpire {
+        order_id: u32,
+        fee: u64,
+        ts: u64,
+    },
+}
+
+impl DriftEvent {
+    /// Deserialize drift event by discriminant
+    fn from_discriminant(disc: [u8; 8], data: &mut &[u8]) -> Option<Self> {
+        match disc {
+            // deser should only fail on a breaking protocol changes
+            OrderActionRecord::DISCRIMINATOR => {
+                Self::from_oar(OrderActionRecord::deserialize(data).expect("deserializes"))
+            }
+            OrderRecord::DISCRIMINATOR => {
+                Self::from_order_record(OrderRecord::deserialize(data).expect("deserializes"))
+            }
+            _ => {
+                debug!(target: LOG_TARGET, "unhandled event: {disc:?}");
+                None
+            }
+        }
+    }
+    fn from_order_record(value: OrderRecord) -> Option<Self> {
+        Some(DriftEvent::OrderCreate {
+            order: value.order,
+            ts: value.ts.unsigned_abs(),
+        })
+    }
+    fn from_oar(value: OrderActionRecord) -> Option<Self> {
+        match value.action {
+            OrderAction::Place => Some(DriftEvent::OrderCreate {
+                order: Order::default(), // TODO: populate when known
+                ts: value.ts.unsigned_abs(),
+            }),
+            OrderAction::Cancel => {
+                if let OrderActionExplanation::OrderExpired = value.action_explanation {
+                    // TODO: would be nice to report user_order_id too...
+                    Some(DriftEvent::OrderExpire {
+                        fee: value.filler_reward.unwrap_or_default(),
+                        order_id: value
+                            .maker_order_id
+                            .or(value.taker_order_id)
+                            .expect("order id set"),
+                        ts: value.ts.unsigned_abs(),
+                    })
+                } else {
+                    Some(DriftEvent::OrderCancel {
+                        maker: value.maker,
+                        taker: value.taker,
+                        maker_order_id: value.maker_order_id.unwrap_or_default(),
+                        taker_order_id: value.taker_order_id.unwrap_or_default(),
+                        ts: value.ts.unsigned_abs(),
+                    })
+                }
+            }
+            OrderAction::Fill => Some(DriftEvent::OrderFill {
+                maker: value.maker,
+                maker_fee: value.maker_fee.unwrap_or_default(),
+                maker_order_id: value.maker_order_id.unwrap_or_default(),
+                maker_side: value.maker_order_direction,
+                taker: value.taker,
+                taker_fee: value.taker_fee.unwrap_or_default(),
+                taker_order_id: value.taker_order_id.unwrap_or_default(),
+                taker_side: value.taker_order_direction,
+                base_asset_amount_filled: value.base_asset_amount_filled.unwrap_or_default(),
+                market_index: value.market_index,
+                market_type: value.market_type,
+                ts: value.ts.unsigned_abs(),
+            }),
+            // unsupported
+            OrderAction::Expire | OrderAction::Trigger => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
+    use solana_sdk::commitment_config::CommitmentConfig;
+
     use super::*;
 
     #[tokio::test]
     async fn event_streaming() {
-        let event_subscriber =
-            EventSubscriber::new(RpcClient::new("https://api.devnet.solana.com".into()));
+        let event_subscriber = EventSubscriber::new(RpcClient::new_with_commitment(
+            "https://api.devnet.solana.com".into(),
+            CommitmentConfig::confirmed(),
+        ));
 
         let mut event_stream = event_subscriber
             .subscribe(Pubkey::from_str("9JtczxrJjPM4J1xooxr2rFXmRivarb4BwjNiBgXDwe2p").unwrap());
 
         while let Some(event) = event_stream.next().await {
-            let DriftEvent::OAR(oar) = event;
-            dbg!(oar.maker, oar.taker, oar.filler);
-            dbg!(oar.ts);
+            dbg!(event);
         }
     }
 }

@@ -235,7 +235,7 @@ impl<T: AccountProvider> DriftClient<T> {
     }
 
     /// Return on-chain program metadata
-    pub fn program_data<'a>(&'a self) -> &'a ProgramData {
+    pub fn program_data(&self) -> &ProgramData {
         &self.backend.program_data
     }
 
@@ -1048,7 +1048,6 @@ mod tests {
 
         DriftClient {
             backend: Box::leak(Box::new(backend)),
-            active_sub_account_id: 0,
         }
     }
 
@@ -1058,7 +1057,6 @@ mod tests {
             Context::DevNet,
             DEVNET_ENDPOINT,
             RpcAccountProvider::new(DEVNET_ENDPOINT),
-            None,
         )
         .await
         .unwrap();
