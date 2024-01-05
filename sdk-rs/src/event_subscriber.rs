@@ -179,11 +179,7 @@ impl DriftEventStream {
 
                     if let OptionSerializer::Some(logs) = response.meta.unwrap().log_messages {
                         for log in logs {
-                            // TODO: need some awareness here to populate prior event with subsequently parsed events
-                            // e.g. place order OAR is followed by the OrderRecord
-                            // want to emit a single event with all the info..
-                            let event = try_parse_log(log.as_str());
-                            if let Some(event) = event {
+                            if let Some(event) = try_parse_log(log.as_str()) {
                                 event_tx.try_send(event).expect("sent");
                             }
                         }
@@ -291,13 +287,9 @@ impl DriftEvent {
     }
     fn from_oar(value: OrderActionRecord) -> Option<Self> {
         match value.action {
-            OrderAction::Place => Some(DriftEvent::OrderCreate {
-                order: Order::default(), // TODO: populate when known
-                ts: value.ts.unsigned_abs(),
-            }),
             OrderAction::Cancel => {
                 if let OrderActionExplanation::OrderExpired = value.action_explanation {
-                    // TODO: would be nice to report user_order_id too...
+                    // TODO: would be nice to report the `user_order_id` too...
                     Some(DriftEvent::OrderExpire {
                         fee: value.filler_reward.unwrap_or_default(),
                         order_id: value
@@ -330,8 +322,10 @@ impl DriftEvent {
                 market_type: value.market_type,
                 ts: value.ts.unsigned_abs(),
             }),
-            // unsupported
-            OrderAction::Expire | OrderAction::Trigger => None,
+            // Place - parsed from `OrderRecord` event, ignored here due to lack of useful info
+            // Expire - never emitted
+            // Trigger - unimplemented
+            OrderAction::Place | OrderAction::Expire | OrderAction::Trigger => None,
         }
     }
 }
