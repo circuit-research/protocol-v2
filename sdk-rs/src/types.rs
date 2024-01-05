@@ -1,11 +1,11 @@
 use std::cmp::Ordering;
 
-use drift_program::error::ErrorCode;
+use drift::error::ErrorCode;
 // re-export types in public API
-pub use drift_program::{
+pub use drift::{
     controller::position::PositionDirection,
+    instructions::{ModifyOrderParams, OrderParams, PostOnlyParam},
     state::{
-        order_params::{ModifyOrderParams, OrderParams, PostOnlyParam},
         perp_market::PerpMarket,
         spot_market::SpotMarket,
         user::{MarketType, Order, OrderType, PerpPosition, SpotPosition},
@@ -26,6 +26,12 @@ use tokio::net::TcpStream;
 use crate::constants::{perp_market_configs, spot_market_configs};
 
 pub type SdkResult<T> = Result<T, SdkError>;
+
+#[derive(Clone, Copy)]
+pub struct ReferrerInfo {
+    pub referrer: Pubkey,
+    pub referrer_stats: Pubkey,
+}
 
 /// Drift program context
 #[derive(Debug, Copy, Clone)]
@@ -367,7 +373,7 @@ impl MarketPrecision for PerpMarket {
 
 #[cfg(test)]
 mod tests {
-    use drift_program::error::ErrorCode;
+    use drift::error::ErrorCode;
     use solana_client::{
         client_error::{ClientError, ClientErrorKind},
         rpc_request::{RpcError, RpcRequest},

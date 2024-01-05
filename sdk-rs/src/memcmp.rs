@@ -1,6 +1,6 @@
 use solana_client::rpc_filter::{RpcFilterType, Memcmp};
 use anchor_lang::Discriminator;
-use drift_program::state::user::User;
+use drift::state::user::User;
 
 pub fn get_user_filter() -> RpcFilterType {
     return RpcFilterType::Memcmp(Memcmp::new_raw_bytes(

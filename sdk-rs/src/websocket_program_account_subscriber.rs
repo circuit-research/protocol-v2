@@ -120,7 +120,7 @@ where
 
         tokio::spawn( async move {
             let (mut accounts, unsubscriber) = pubsub.program_subscribe(
-                &drift_program::ID,
+                &drift::ID,
                 Some(config)
             ).await.unwrap();
             loop {
@@ -187,7 +187,7 @@ mod tests {
     use crate::memcmp::{get_user_filter, get_non_idle_user_filter};
     use anchor_client::Cluster;
     use std::str::FromStr;
-    use drift_program::state::user::User;
+    use drift::state::user::User;
 
     // this is my (frank) free helius endpoint
     const MAINNET_ENDPOINT: &str = "https://mainnet.helius-rpc.com/?api-key=3a1ca16d-e181-4755-9fe7-eac27579b48c";

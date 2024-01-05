@@ -2,7 +2,7 @@
 use std::{task::Poll, time::Duration};
 
 // External Crate Imports
-use drift_program::state::user::MarketType;
+use drift::state::user::MarketType;
 use futures_util::{SinkExt, Stream, StreamExt};
 use log::{error, info};
 use reqwest::Client;
@@ -275,6 +275,7 @@ where
 #[cfg(test)]
 mod tests {
     use futures_util::StreamExt;
+    use solana_sdk::signature::Keypair;
     use crate::DriftClient;
     use crate::RpcAccountProvider;
     use super::*;
@@ -327,10 +328,12 @@ mod tests {
     #[tokio::test]
     async fn subscribe_ws() {
         env_logger::init();
+        let keypair = Keypair::new();
         let _ = DriftClient::new(
             Context::MainNet,
             MAINNET_ENDPOINT,
             RpcAccountProvider::new(MAINNET_ENDPOINT),
+            keypair,
             None,
         )
         .await

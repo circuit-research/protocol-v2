@@ -1062,6 +1062,30 @@ dependencies = [
 
 [[package]]
 name = "drift"
+version = "2.41.0"
+source = "git+https://github.com/drift-labs/protocol-v2.git?rev=e5cdd4#e5cdd497bec48e83e8b9d99dc67e1493d82940a9"
+dependencies = [
+ "anchor-lang",
+ "anchor-spl",
+ "arrayref",
+ "base64 0.13.1",
+ "borsh",
+ "bytemuck",
+ "enumflags2",
+ "num-derive",
+ "num-integer",
+ "num-traits",
+ "phoenix-v1",
+ "pyth-client",
+ "serum_dex",
+ "solana-program",
+ "solana-security-txt",
+ "thiserror",
+ "uint",
+]
+
+[[package]]
+name = "drift"
 version = "2.48.0"
 dependencies = [
  "anchor-lang",
@@ -1093,7 +1117,7 @@ dependencies = [
  "anchor-lang",
  "base64 0.21.5",
  "bs58 0.5.0",
- "drift",
+ "drift 2.41.0",
  "env_logger 0.10.1",
  "events_emitter",
  "fnv",

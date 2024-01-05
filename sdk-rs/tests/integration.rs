@@ -1,19 +1,22 @@
 use std::borrow::Cow;
 
-use drift_program::math::constants::{LAMPORTS_PER_SOL_I64, QUOTE_PRECISION_U64};
+use drift::math::constants::{LAMPORTS_PER_SOL_I64, QUOTE_PRECISION_U64};
 use drift_sdk::{
     types::{Context, MarketId, NewOrder},
     DriftClient, RpcAccountProvider, TransactionBuilder, Wallet,
 };
+use solana_sdk::signature::Keypair;
 
 #[ignore]
 #[tokio::test]
 async fn place_and_cancel_orders() {
     let context = Context::DevNet;
+    let keypair = Keypair::new();
     let client = DriftClient::new(
         context,
         "https://api.devnet.solana.com",
         RpcAccountProvider::new("https://api.devnet.solana.com"),
+        keypair,
         None,
     )
     .await
