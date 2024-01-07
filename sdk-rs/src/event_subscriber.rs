@@ -14,10 +14,10 @@ use drift_program::{
 };
 use futures_util::{future::BoxFuture, stream::FuturesOrdered, FutureExt, Stream, StreamExt};
 use log::{debug, error};
-pub use solana_client::nonblocking::rpc_client::RpcClient;
+use serde::Serializer;
+pub use solana_client::nonblocking::{pubsub_client::PubsubClient, rpc_client::RpcClient};
 use solana_client::{
-    nonblocking::pubsub_client::PubsubClient, rpc_client::GetConfirmedSignaturesForAddress2Config,
-    rpc_config::RpcTransactionLogsConfig,
+    rpc_client::GetConfirmedSignaturesForAddress2Config, rpc_config::RpcTransactionLogsConfig,
 };
 pub use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::{pubkey::Pubkey, signature::Signature, transaction::VersionedTransaction};
@@ -138,7 +138,11 @@ fn log_stream(provider: PubsubClient, sub_account: Pubkey) -> DriftEventStream {
             for log in response.value.logs {
                 // a drift sub-account should not interact with any other program by definition
                 if let Some(event) = try_parse_log(log.as_str()) {
-                    event_tx.try_send(event).expect("sent");
+                    // unrelated events from same tx should not be emitted e.g. a filler tx which produces other fill events
+                    if event.pertains_to(sub_account) {
+                        // TODO: handle RevertFill semantics
+                        event_tx.try_send(event).expect("sent");
+                    }
                 }
             }
         }
@@ -206,7 +210,9 @@ pub fn polled_stream(provider: impl EventRpcProvider, sub_account: Pubkey) -> Dr
                 if let OptionSerializer::Some(logs) = response.meta.unwrap().log_messages {
                     for log in logs {
                         if let Some(event) = try_parse_log(log.as_str()) {
-                            event_tx.try_send(event).expect("sent");
+                            if event.pertains_to(sub_account) {
+                                event_tx.try_send(event).expect("sent");
+                            }
                         }
                     }
                 }
@@ -279,11 +285,14 @@ fn try_parse_log(raw: &str) -> Option<DriftEvent> {
 #[derive(Debug, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DriftEvent {
+    #[serde(rename_all = "camelCase")]
     OrderFill {
+        #[serde(serialize_with = "serialize_pubkey")]
         maker: Option<Pubkey>,
         maker_fee: i64,
         maker_order_id: u32,
         maker_side: Option<PositionDirection>,
+        #[serde(serialize_with = "serialize_pubkey")]
         taker: Option<Pubkey>,
         taker_fee: u64,
         taker_order_id: u32,
@@ -293,26 +302,34 @@ pub enum DriftEvent {
         market_type: MarketType,
         ts: u64,
     },
+    #[serde(rename_all = "camelCase")]
     OrderCancel {
+        #[serde(serialize_with = "serialize_pubkey")]
         taker: Option<Pubkey>,
+        #[serde(serialize_with = "serialize_pubkey")]
         maker: Option<Pubkey>,
         taker_order_id: u32,
         maker_order_id: u32,
         ts: u64,
     },
-    OrderCreate {
-        order: Order,
-        ts: u64,
-    },
+    #[serde(rename_all = "camelCase")]
+    OrderCreate { order: Order, ts: u64 },
     // sub-case of cancel?
-    OrderExpire {
-        order_id: u32,
-        fee: u64,
-        ts: u64,
-    },
+    #[serde(rename_all = "camelCase")]
+    OrderExpire { order_id: u32, fee: u64, ts: u64 },
 }
 
 impl DriftEvent {
+    /// Return true if the event is connected to sub-account
+    fn pertains_to(&self, sub_account: Pubkey) -> bool {
+        let subject = &Some(sub_account);
+        match self {
+            Self::OrderCancel { taker, maker, .. } => maker == subject || taker == subject,
+            Self::OrderFill { maker, taker, .. } => maker == subject || taker == subject,
+            // these order types are contextual
+            Self::OrderCreate { .. } | Self::OrderExpire { .. } => true,
+        }
+    }
     /// Deserialize drift event by discriminant
     fn from_discriminant(disc: [u8; 8], data: &mut &[u8]) -> Option<Self> {
         match disc {
@@ -378,6 +395,13 @@ impl DriftEvent {
             OrderAction::Place | OrderAction::Expire | OrderAction::Trigger => None,
         }
     }
+}
+
+fn serialize_pubkey<S>(x: &Option<Pubkey>, s: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    s.serialize_str(x.map(|pk| pk.to_string()).unwrap_or_default().as_str())
 }
 
 #[cfg(test)]
