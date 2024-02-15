@@ -2,7 +2,7 @@
 
 use std::{borrow::Cow, sync::Arc, time::Duration};
 
-use anchor_lang::{AccountDeserialize, Discriminator, InstructionData, ToAccountMetas};
+use anchor_lang::{AccountDeserialize, Accounts, Discriminator, InstructionData, ToAccountMetas};
 use async_utils::{retry_policy, spawn_retry_task};
 use drift_program::{
     controller::position::PositionDirection,
@@ -838,7 +838,7 @@ impl<'a> TransactionBuilder<'a> {
                 user_token_account,
                 token_program: *constants::TOKEN_PROGRAM_ID,
             },
-            self.account_data.as_ref(),
+            &[self.account_data.as_ref()],
             &[],
             &[MarketId::spot(spot_market_index)]
         );
@@ -871,7 +871,7 @@ impl<'a> TransactionBuilder<'a> {
                 drift_signer: constants::derive_drift_signer(),
                 token_program: *constants::TOKEN_PROGRAM_ID
             },
-            &self.account_data.as_ref(),
+            &[self.account_data.as_ref()],
             &[],
             &[MarketId::spot(spot_market_index)]
         );
@@ -883,6 +883,76 @@ impl<'a> TransactionBuilder<'a> {
                 market_index: spot_market_index,
                 amount,
                 reduce_only: reduce_only.unwrap_or(false)
+            })
+        };
+
+        self.ixs.push(ix);
+
+        self
+    }
+
+    pub fn place_and_take_perp(mut self, params: OrderParams, maker_info: Option<MakerInfo>) -> Self {
+        let mut accounts = build_accounts(
+            self.program_data,
+            drift_program::accounts::PlaceAndTake {
+                state: *state_account(),
+                user: self.sub_account,
+                user_stats: Wallet::derive_stats_account(&self.authority, &constants::PROGRAM_ID),
+                authority: self.authority
+            },
+            &[self.account_data.as_ref()],
+            &[],
+            &[MarketId::perp(params.market_index)]
+        );
+
+        let mut maker_order_id: Option<u32> = None;
+
+        if let Some(maker_info) = maker_info {
+            maker_order_id = Some(maker_info.order().order_id);
+            accounts.push(AccountMeta::new(maker_info.maker(), false));
+        }
+
+        let ix = Instruction {
+            program_id: constants::PROGRAM_ID,
+            accounts,
+            data: InstructionData::data(&drift_program::instruction::PlaceAndTakePerpOrder {
+                params,
+                maker_order_id,
+            })
+        };
+
+        self.ixs.push(ix);
+
+        self
+    }
+
+    pub fn place_and_make_perp(mut self, params: OrderParams, taker_info: TakerInfo, referrer_info: Option<ReferrerInfo>) -> Self {
+        let mut accounts = build_accounts(
+            self.program_data,
+            drift_program::accounts::PlaceAndMake {
+                state: *state_account(),
+                user: self.sub_account,
+                user_stats: Wallet::derive_stats_account(&self.authority, &constants::PROGRAM_ID),
+                taker: taker_info.taker(),
+                taker_stats: taker_info.taker_stats(),
+                authority: self.authority
+            },
+            &[self.account_data.as_ref(), &taker_info.taker_user_account()],
+            &[],
+            &[MarketId::perp(params.market_index)]
+        );
+
+        if let Some(referrer_info) = referrer_info {
+            accounts.push(AccountMeta::new(referrer_info.referrer(), false));
+            accounts.push(AccountMeta::new(referrer_info.referrer_stats(), false))
+        }
+
+        let ix = Instruction {
+            program_id: constants::PROGRAM_ID,
+            accounts,
+            data: InstructionData::data(&drift_program::instruction::PlaceAndMakePerpOrder {
+                params,
+                taker_order_id: taker_info.order().order_id
             })
         };
 
@@ -905,7 +975,7 @@ impl<'a> TransactionBuilder<'a> {
                 authority: self.authority,
                 user: self.sub_account,
             },
-            self.account_data.as_ref(),
+            &[self.account_data.as_ref()],
             readable_accounts.as_ref(),
             &[],
         );
@@ -932,7 +1002,7 @@ impl<'a> TransactionBuilder<'a> {
                 authority: self.authority,
                 user: self.sub_account,
             },
-            self.account_data.as_ref(),
+            &[self.account_data.as_ref()],
             &[],
             &[],
         );
@@ -969,7 +1039,7 @@ impl<'a> TransactionBuilder<'a> {
                 authority: self.authority,
                 user: self.sub_account,
             },
-            self.account_data.as_ref(),
+            &[self.account_data.as_ref()],
             &[(idx, kind).into()],
             &[],
         );
@@ -997,7 +1067,7 @@ impl<'a> TransactionBuilder<'a> {
                 authority: self.authority,
                 user: self.sub_account,
             },
-            self.account_data.as_ref(),
+            &[self.account_data.as_ref()],
             &[],
             &[],
         );
@@ -1023,7 +1093,7 @@ impl<'a> TransactionBuilder<'a> {
                 authority: self.authority,
                 user: self.sub_account,
             },
-            self.account_data.as_ref(),
+            &[self.account_data.as_ref()],
             &[],
             &[],
         );
@@ -1052,7 +1122,7 @@ impl<'a> TransactionBuilder<'a> {
                     authority: self.authority,
                     user: self.sub_account,
                 },
-                self.account_data.as_ref(),
+                &[self.account_data.as_ref()],
                 &[],
                 &[],
             );
@@ -1081,7 +1151,7 @@ impl<'a> TransactionBuilder<'a> {
                     authority: self.authority,
                     user: self.sub_account,
                 },
-                self.account_data.as_ref(),
+                &[self.account_data.as_ref()],
                 &[],
                 &[],
             );
@@ -1133,7 +1203,7 @@ impl<'a> TransactionBuilder<'a> {
 fn build_accounts(
     program_data: &ProgramData,
     base_accounts: impl ToAccountMetas,
-    user: &User,
+    users: &[&User],
     markets_readable: &[MarketId],
     markets_writable: &[MarketId],
 ) -> Vec<AccountMeta> {
@@ -1195,11 +1265,13 @@ fn build_accounts(
     }
 
     // Drift program performs margin checks which requires reading user positions
-    for p in user.spot_positions.iter().filter(|p| !p.is_available()) {
-        include_market(p.market_index, MarketType::Spot, false);
-    }
-    for p in user.perp_positions.iter().filter(|p| !p.is_available()) {
-        include_market(p.market_index, MarketType::Perp, false);
+    for user in users {
+        for p in user.spot_positions.iter().filter(|p| !p.is_available()) {
+            include_market(p.market_index, MarketType::Spot, false);
+        }
+        for p in user.perp_positions.iter().filter(|p| !p.is_available()) {
+            include_market(p.market_index, MarketType::Perp, false);
+        }
     }
 
     // always manually try to include the quote (USDC) market

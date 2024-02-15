@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use drift_program::error::ErrorCode;
+use drift_program::{error::ErrorCode, state::user::User};
 // re-export types in public API
 pub use drift_program::{
     controller::position::PositionDirection,
@@ -378,7 +378,95 @@ impl ClientOpts {
     }
 }
 
+pub struct MakerInfo {
+    maker: Pubkey,
+    maker_stats: Pubkey,
+    maker_user_account: User,
+    order: Order
+}
 
+impl MakerInfo {
+    pub fn new(maker: Pubkey, maker_stats: Pubkey, maker_user_account: User, order: Order) -> Self {
+        Self {
+            maker, 
+            maker_stats,
+            maker_user_account,
+            order
+        }
+    }
+
+    pub fn maker(&self) -> Pubkey {
+        self.maker
+    }
+
+    pub fn maker_stats(&self) -> Pubkey {
+        self.maker_stats
+    }
+
+    pub fn maker_user_account(&self) -> User {
+        self.maker_user_account
+    }
+
+    pub fn order(&self) -> Order {
+        self.order
+    }
+}
+
+pub struct TakerInfo {
+    taker: Pubkey,
+    taker_stats: Pubkey,
+    taker_user_account: User,
+    order: Order
+}
+
+impl TakerInfo {
+    pub fn new(taker: Pubkey, taker_stats: Pubkey, taker_user_account: User, order: Order) -> Self {
+        Self {
+            taker, 
+            taker_stats,
+            taker_user_account,
+            order
+        }
+    }
+
+    pub fn taker(&self) -> Pubkey {
+        self.taker
+    }
+
+    pub fn taker_stats(&self) -> Pubkey {
+        self.taker_stats
+    }
+
+    pub fn taker_user_account(&self) -> User {
+        self.taker_user_account
+    }
+
+    pub fn order(&self) -> Order {
+        self.order
+    }
+}
+
+pub struct ReferrerInfo {
+    referrer: Pubkey,
+    referrer_stats: Pubkey
+}
+
+impl ReferrerInfo {
+    pub fn new(referrer: Pubkey, referrer_stats: Pubkey) -> Self {
+        Self {
+            referrer,
+            referrer_stats
+        }
+    }
+
+    pub fn referrer(&self) -> Pubkey {
+        self.referrer
+    }
+
+    pub fn referrer_stats(&self) -> Pubkey {
+        self.referrer_stats
+    }
+}
 #[cfg(test)]
 mod tests {
     use drift_program::error::ErrorCode;
