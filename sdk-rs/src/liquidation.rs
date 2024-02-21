@@ -205,8 +205,9 @@ fn calculate_liquidation_price_inner(
     .map_err(|err| SdkError::Anchor(Box::new(err.into())))?;
 
     // calculate perp free collateral delta
-    // TODO should: error if user doesn't have position
-    let perp_market = perp_market_map.get_ref(&market_index).unwrap();
+    let perp_market = perp_market_map
+        .get_ref(&market_index)
+        .map_err(|err| SdkError::Anchor(Box::new(err.into())))?;
     let perp_free_collateral_delta = calculate_perp_free_collateral_delta(
         user.get_perp_position(market_index).unwrap(),
         &perp_market,
@@ -307,6 +308,7 @@ mod tests {
         state::{
             oracle::{HistoricalOracleData, OracleSource},
             perp_market::{MarketStatus, AMM},
+            spot_market::SpotBalanceType,
             user::SpotPosition,
         },
     };
@@ -317,6 +319,7 @@ mod tests {
     use crate::{MarketId, RpcAccountProvider, Wallet};
 
     const SOL_ORACLE: Pubkey = solana_sdk::pubkey!("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix");
+    const BTC_ORACLE: Pubkey = solana_sdk::pubkey!("GVXRSBjFk6e6J3NbVPXohDJetcTjaeeuykUpbQF8UoMU");
 
     fn sol_spot_market() -> SpotMarket {
         SpotMarket {
@@ -359,6 +362,30 @@ mod tests {
         }
     }
 
+    fn btc_perp_market() -> PerpMarket {
+        PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                bid_base_asset_reserve: 101 * AMM_RESERVE_PRECISION,
+                bid_quote_asset_reserve: 99 * AMM_RESERVE_PRECISION,
+                ask_base_asset_reserve: 99 * AMM_RESERVE_PRECISION,
+                ask_quote_asset_reserve: 101 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                oracle: BTC_ORACLE,
+                ..AMM::default()
+            },
+            market_index: 1,
+            margin_ratio_initial: 1000,
+            margin_ratio_maintenance: 500,
+            imf_factor: 1000, // 1_000/1_000_000 = .001
+            unrealized_pnl_initial_asset_weight: 10000,
+            unrealized_pnl_maintenance_asset_weight: 10000,
+            status: MarketStatus::Initialized,
+            ..PerpMarket::default()
+        }
+    }
+
     fn usdc_spot_market() -> SpotMarket {
         SpotMarket {
             market_index: 0,
@@ -367,7 +394,7 @@ mod tests {
             decimals: 6,
             initial_asset_weight: SPOT_WEIGHT_PRECISION,
             maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
-            deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
+            deposit_balance: 100_000 * SPOT_BALANCE_PRECISION,
             liquidator_fee: 0,
             historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
             ..SpotMarket::default()
@@ -428,6 +455,7 @@ mod tests {
         let liquidation_price =
             calculate_liquidation_price_inner(&user, sol_perp_index, accounts_map).unwrap();
         dbg!(liquidation_price);
+        assert_eq!(liquidation_price, 119_047_619);
     }
 
     #[test]
@@ -462,24 +490,27 @@ mod tests {
         let liquidation_price =
             calculate_liquidation_price_inner(&user, sol_perp_index, accounts_map).unwrap();
         dbg!(liquidation_price);
+        assert_eq!(liquidation_price, 52_631_579);
     }
 
     #[test]
     fn liquidation_price_short_with_spot_balance() {
-        let sol_perp_index = 0;
+        let btc_perp_index = 1;
         let mut user = User::default();
         user.perp_positions[0] = PerpPosition {
-            market_index: sol_perp_index,
-            base_asset_amount: -3 * BASE_PRECISION_I64,
+            market_index: btc_perp_index,
+            base_asset_amount: -250_000_000, // 0.25btc
             ..Default::default()
         };
         user.spot_positions[0] = SpotPosition {
             market_index: 1,
-            scaled_balance: 2 * SPOT_BALANCE_PRECISION_U64,
+            scaled_balance: 200 * SPOT_BALANCE_PRECISION_U64,
             ..Default::default()
         };
         let mut sol_oracle_price = get_pyth_price(100, 6);
         crate::create_account_info!(sol_oracle_price, &SOL_ORACLE, &pyth::ID, sol_oracle);
+        let mut btc_oracle_price = get_pyth_price(40_000, 6);
+        crate::create_account_info!(btc_oracle_price, &BTC_ORACLE, &pyth::ID, btc_oracle);
         crate::create_anchor_account_info!(
             usdc_spot_market(),
             &constants::PROGRAM_ID,
@@ -493,19 +524,19 @@ mod tests {
             sol_spot
         );
         crate::create_anchor_account_info!(
-            sol_perp_market(),
+            btc_perp_market(),
             &constants::PROGRAM_ID,
             PerpMarket,
-            sol_perp
+            btc_perp
         );
         let accounts_map = build_account_map(
-            &mut [sol_perp],
+            &mut [btc_perp],
             &mut [usdc_spot, sol_spot],
-            &mut [sol_oracle],
+            &mut [sol_oracle, btc_oracle],
         );
         let liquidation_price =
-            calculate_liquidation_price_inner(&user, sol_perp_index, accounts_map).unwrap();
-        dbg!(liquidation_price);
+            calculate_liquidation_price_inner(&user, btc_perp_index, accounts_map).unwrap();
+        assert_eq!(liquidation_price, 68_571_428_571);
     }
 
     #[test]
@@ -550,6 +581,14 @@ mod tests {
         let liquidation_price =
             calculate_liquidation_price_inner(&user, sol_perp_index, accounts_map).unwrap();
         dbg!(liquidation_price);
+        assert_eq!(liquidation_price, 76_335_878);
+    }
+
+    #[test]
+    fn liquidation_price_no_positions() {
+        let user = User::default();
+        let accounts_map = build_account_map(&mut [], &mut [], &mut []);
+        assert!(calculate_liquidation_price_inner(&user, 0, accounts_map).is_err());
     }
 
     fn build_account_map<'a>(
