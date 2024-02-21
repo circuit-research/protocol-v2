@@ -10,6 +10,7 @@ rpc_tests = []
 anchor-lang = "0.27.0"
 bytemuck = "1.13.0"
 base64 = "0.13"
+bytes = "*"
 drift-program = { package = "drift", path = "../programs/drift" }
 env_logger = "0.10.1"
 fnv = "1.0.7"
@@ -32,6 +33,7 @@ lazy_static = "1.4.0"
 [dev-dependencies]
 anchor-client = "0.27.0"
 anchor-lang = "*"
+pyth = { path = "../programs/pyth" }
 borsh = "*"
 hex = "*"
 hex-literal = "*"
