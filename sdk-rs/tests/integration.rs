@@ -15,7 +15,7 @@ async fn get_oracle_prices() {
     let client = DriftClient::new_with_opts(
         Context::DevNet,
         RpcAccountProvider::new("https://api.devnet.solana.com"),
-        Keypair::new(),
+        Keypair::new().into(),
         ClientOpts::default(),
     )
     .await
@@ -33,7 +33,7 @@ async fn place_and_cancel_orders() {
     let client = DriftClient::new_with_opts(
         Context::DevNet,
         RpcAccountProvider::new("https://api.devnet.solana.com"),
-        Keypair::new(),
+        Keypair::new().into(),
         ClientOpts::default(),
     )
     .await

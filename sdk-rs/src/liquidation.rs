@@ -35,7 +35,7 @@ use solana_sdk::{
     pubkey::Pubkey,
 };
 
-use crate::{constants, AccountProvider, DriftClient, SdkError, SdkResult};
+use crate::{constants, AccountProvider, DriftClient, MarketId, SdkError, SdkResult};
 
 /// Builds an AccountMap of relevant spot, perp, and oracle accounts from rpc
 #[derive(Default)]
@@ -63,6 +63,17 @@ impl AccountMapBuilder {
             self.account_keys.push(market.pubkey);
             oracles.insert(market.oracle);
             spot_markets_count += 1;
+        }
+
+        // always need quote market
+        let quote_market = *client
+            .program_data()
+            .spot_market_config_by_index(MarketId::QUOTE_SPOT.index)
+            .unwrap();
+        if !oracles.contains(&quote_market.oracle) {
+            self.account_keys.push(quote_market.pubkey);
+            oracles.insert(quote_market.oracle);
+            spot_markets_count += 1
         }
 
         for p in user.perp_positions.iter().filter(|p| !p.is_available()) {
@@ -286,11 +297,84 @@ fn calculate_spot_free_collateral_delta(position: &SpotPosition, market: &SpotMa
 mod tests {
     use std::str::FromStr;
 
+    use anchor_lang::{Owner, ZeroCopy};
+    use bytes::BytesMut;
+    use drift_program::{
+        math::constants::{
+            AMM_RESERVE_PRECISION, LIQUIDATION_FEE_PRECISION, PEG_PRECISION,
+            SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
+        },
+        state::{
+            oracle::{HistoricalOracleData, OracleSource},
+            perp_market::{MarketStatus, AMM},
+            user::SpotPosition,
+        },
+    };
+    use pyth::pc::Price;
     use solana_sdk::signature::Keypair;
 
     use super::*;
-    use crate::{RpcAccountProvider, Wallet};
+    use crate::{MarketId, RpcAccountProvider, Wallet};
 
+    const SOL_ORACLE: Pubkey = solana_sdk::pubkey!("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix");
+
+    fn sol_spot_market() -> SpotMarket {
+        SpotMarket {
+            market_index: 1,
+            oracle_source: OracleSource::Pyth,
+            oracle: SOL_ORACLE,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 9,
+            initial_asset_weight: 8 * SPOT_WEIGHT_PRECISION / 10,
+            maintenance_asset_weight: 9 * SPOT_WEIGHT_PRECISION / 10,
+            initial_liability_weight: 12 * SPOT_WEIGHT_PRECISION / 10,
+            maintenance_liability_weight: 11 * SPOT_WEIGHT_PRECISION / 10,
+            liquidator_fee: LIQUIDATION_FEE_PRECISION / 1000,
+            deposit_balance: 1000 * SPOT_BALANCE_PRECISION,
+            ..SpotMarket::default()
+        }
+    }
+
+    fn sol_perp_market() -> PerpMarket {
+        PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                bid_base_asset_reserve: 101 * AMM_RESERVE_PRECISION,
+                bid_quote_asset_reserve: 99 * AMM_RESERVE_PRECISION,
+                ask_base_asset_reserve: 99 * AMM_RESERVE_PRECISION,
+                ask_quote_asset_reserve: 101 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                order_step_size: 10000000,
+                oracle: SOL_ORACLE,
+                ..AMM::default()
+            },
+            market_index: 0,
+            margin_ratio_initial: 1000,
+            margin_ratio_maintenance: 500,
+            status: MarketStatus::Initialized,
+            ..PerpMarket::default()
+        }
+    }
+
+    fn usdc_spot_market() -> SpotMarket {
+        SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+            deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
+            liquidator_fee: 0,
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
+            ..SpotMarket::default()
+        }
+    }
+
+    #[ignore]
     #[tokio::test]
     async fn calculate_liq_price() {
         let wallet = Wallet::read_only(
@@ -299,7 +383,7 @@ mod tests {
         let client = DriftClient::new(
             crate::Context::MainNet,
             RpcAccountProvider::new("https://api.devnet.solana.com"),
-            Keypair::new(),
+            Keypair::new().into(),
         )
         .await
         .unwrap();
@@ -312,15 +396,274 @@ mod tests {
 
     #[test]
     fn liquidation_price_short() {
-        calculate_liquidation_price_inner(user, market_index, account_maps);
+        let sol_perp_index = 0;
+        let mut user = User::default();
+        user.perp_positions[0] = PerpPosition {
+            market_index: sol_perp_index,
+            base_asset_amount: -2 * BASE_PRECISION_I64,
+            ..Default::default()
+        };
+        user.spot_positions[0] = SpotPosition {
+            market_index: MarketId::QUOTE_SPOT.index,
+            scaled_balance: 250_u64 * SPOT_BALANCE_PRECISION_U64,
+            ..Default::default()
+        };
+
+        let mut sol_oracle_price = get_pyth_price(100, 6);
+        crate::create_account_info!(sol_oracle_price, &SOL_ORACLE, &pyth::ID, sol_oracle);
+        crate::create_anchor_account_info!(
+            usdc_spot_market(),
+            &constants::PROGRAM_ID,
+            SpotMarket,
+            usdc_spot
+        );
+        crate::create_anchor_account_info!(
+            sol_perp_market(),
+            &constants::PROGRAM_ID,
+            PerpMarket,
+            sol_perp
+        );
+        let accounts_map = build_account_map(&mut [sol_perp], &mut [usdc_spot], &mut [sol_oracle]);
+
+        let liquidation_price =
+            calculate_liquidation_price_inner(&user, sol_perp_index, accounts_map).unwrap();
+        dbg!(liquidation_price);
     }
 
     #[test]
-    fn liquidation_price_long() {}
+    fn liquidation_price_long() {
+        let sol_perp_index = 0;
+        let mut user = User::default();
+        user.perp_positions[0] = PerpPosition {
+            market_index: sol_perp_index,
+            base_asset_amount: 5 * BASE_PRECISION_I64,
+            ..Default::default()
+        };
+        user.spot_positions[0] = SpotPosition {
+            market_index: MarketId::QUOTE_SPOT.index,
+            scaled_balance: 250_u64 * SPOT_BALANCE_PRECISION_U64,
+            ..Default::default()
+        };
+        let mut sol_oracle_price = get_pyth_price(100, 6);
+        crate::create_account_info!(sol_oracle_price, &SOL_ORACLE, &pyth::ID, sol_oracle);
+        crate::create_anchor_account_info!(
+            usdc_spot_market(),
+            &constants::PROGRAM_ID,
+            SpotMarket,
+            usdc_spot
+        );
+        crate::create_anchor_account_info!(
+            sol_perp_market(),
+            &constants::PROGRAM_ID,
+            PerpMarket,
+            sol_perp
+        );
+        let accounts_map = build_account_map(&mut [sol_perp], &mut [usdc_spot], &mut [sol_oracle]);
+        let liquidation_price =
+            calculate_liquidation_price_inner(&user, sol_perp_index, accounts_map).unwrap();
+        dbg!(liquidation_price);
+    }
 
     #[test]
-    fn liquidation_price_short_with_spot_balance() {}
+    fn liquidation_price_short_with_spot_balance() {
+        let sol_perp_index = 0;
+        let mut user = User::default();
+        user.perp_positions[0] = PerpPosition {
+            market_index: sol_perp_index,
+            base_asset_amount: -3 * BASE_PRECISION_I64,
+            ..Default::default()
+        };
+        user.spot_positions[0] = SpotPosition {
+            market_index: 1,
+            scaled_balance: 2 * SPOT_BALANCE_PRECISION_U64,
+            ..Default::default()
+        };
+        let mut sol_oracle_price = get_pyth_price(100, 6);
+        crate::create_account_info!(sol_oracle_price, &SOL_ORACLE, &pyth::ID, sol_oracle);
+        crate::create_anchor_account_info!(
+            usdc_spot_market(),
+            &constants::PROGRAM_ID,
+            SpotMarket,
+            usdc_spot
+        );
+        crate::create_anchor_account_info!(
+            sol_spot_market(),
+            &constants::PROGRAM_ID,
+            SpotMarket,
+            sol_spot
+        );
+        crate::create_anchor_account_info!(
+            sol_perp_market(),
+            &constants::PROGRAM_ID,
+            PerpMarket,
+            sol_perp
+        );
+        let accounts_map = build_account_map(
+            &mut [sol_perp],
+            &mut [usdc_spot, sol_spot],
+            &mut [sol_oracle],
+        );
+        let liquidation_price =
+            calculate_liquidation_price_inner(&user, sol_perp_index, accounts_map).unwrap();
+        dbg!(liquidation_price);
+    }
 
     #[test]
-    fn liquidation_price_long_with_spot_balance() {}
+    fn liquidation_price_long_with_spot_balance() {
+        let sol_perp_index = 0;
+        let mut user = User::default();
+        user.perp_positions[0] = PerpPosition {
+            market_index: sol_perp_index,
+            base_asset_amount: 5 * BASE_PRECISION_I64,
+            ..Default::default()
+        };
+        user.spot_positions[0] = SpotPosition {
+            market_index: 1,
+            scaled_balance: 2 * SPOT_BALANCE_PRECISION_U64,
+            ..Default::default()
+        };
+        let mut sol_oracle_price = get_pyth_price(100, 6);
+        crate::create_account_info!(sol_oracle_price, &SOL_ORACLE, &pyth::ID, sol_oracle);
+        crate::create_anchor_account_info!(
+            usdc_spot_market(),
+            &constants::PROGRAM_ID,
+            SpotMarket,
+            usdc_spot
+        );
+        crate::create_anchor_account_info!(
+            sol_spot_market(),
+            &constants::PROGRAM_ID,
+            SpotMarket,
+            sol_spot
+        );
+        crate::create_anchor_account_info!(
+            sol_perp_market(),
+            &constants::PROGRAM_ID,
+            PerpMarket,
+            sol_perp
+        );
+        let accounts_map = build_account_map(
+            &mut [sol_perp],
+            &mut [usdc_spot, sol_spot],
+            &mut [sol_oracle],
+        );
+        let liquidation_price =
+            calculate_liquidation_price_inner(&user, sol_perp_index, accounts_map).unwrap();
+        dbg!(liquidation_price);
+    }
+
+    fn build_account_map<'a>(
+        perp: &mut [AccountInfo<'a>],
+        spot: &mut [AccountInfo<'a>],
+        oracle: &mut [AccountInfo<'a>],
+    ) -> AccountMaps<'a> {
+        AccountMaps {
+            perp_market_map: PerpMarketMap::load(
+                &MarketSet::default(),
+                &mut perp.iter().peekable(),
+            )
+            .unwrap(),
+            spot_market_map: SpotMarketMap::load(
+                &MarketSet::default(),
+                &mut spot.iter().peekable(),
+            )
+            .unwrap(),
+            oracle_map: OracleMap::load(&mut oracle.iter().peekable(), 0, None).unwrap(),
+        }
+    }
+
+    // helpers from drift-program test_utils.
+    // TODO: re-export from there
+    fn get_pyth_price(price: i64, expo: i32) -> Price {
+        let mut pyth_price = Price::default();
+        let price = price * 10_i64.pow(expo as u32);
+        pyth_price.agg.price = price;
+        pyth_price.twap = price;
+        pyth_price.expo = expo;
+        pyth_price
+    }
+
+    pub fn get_account_bytes<T: bytemuck::Pod>(account: &mut T) -> BytesMut {
+        let mut bytes = BytesMut::new();
+        let data = bytemuck::bytes_of_mut(account);
+        bytes.extend_from_slice(data);
+        bytes
+    }
+
+    pub fn get_anchor_account_bytes<T: ZeroCopy + Owner>(account: &mut T) -> BytesMut {
+        let mut bytes = BytesMut::new();
+        bytes.extend_from_slice(&T::discriminator());
+        let data = bytemuck::bytes_of_mut(account);
+        bytes.extend_from_slice(data);
+        bytes
+    }
+
+    #[macro_export]
+    macro_rules! create_account_info {
+        ($account:expr, $owner:expr, $name: ident) => {
+            let key = Pubkey::default();
+            let mut lamports = 0;
+            let mut data = get_account_bytes(&mut $account);
+            let owner = $type::owner();
+            let $name = AccountInfo::new(
+                &key,
+                true,
+                false,
+                &mut lamports,
+                &mut data[..],
+                $owner,
+                false,
+                0,
+            );
+        };
+        ($account:expr, $pubkey:expr, $owner:expr, $name: ident) => {
+            let mut lamports = 0;
+            let mut data = get_account_bytes(&mut $account);
+            let $name = AccountInfo::new(
+                $pubkey,
+                true,
+                false,
+                &mut lamports,
+                &mut data[..],
+                $owner,
+                false,
+                0,
+            );
+        };
+    }
+
+    #[macro_export]
+    macro_rules! create_anchor_account_info {
+        ($account:expr, $type:ident, $name: ident) => {
+            let key = Pubkey::default();
+            let mut lamports = 0;
+            let mut data = get_anchor_account_bytes(&mut $account);
+            let owner = $type::owner();
+            let $name = AccountInfo::new(
+                &key,
+                true,
+                false,
+                &mut lamports,
+                &mut data[..],
+                &owner,
+                false,
+                0,
+            );
+        };
+        ($account:expr, $pubkey:expr, $type:ident, $name: ident) => {
+            let mut lamports = 0;
+            let mut data = get_anchor_account_bytes(&mut $account);
+            let owner = $type::owner();
+            let $name = AccountInfo::new(
+                $pubkey,
+                true,
+                false,
+                &mut lamports,
+                &mut data[..],
+                &owner,
+                false,
+                0,
+            );
+        };
+    }
 }
