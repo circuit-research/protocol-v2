@@ -1,9 +1,9 @@
 use std::cmp::Ordering;
 
 use anchor_lang::AccountDeserialize;
-use drift_program::error::ErrorCode;
+use drift::error::ErrorCode;
 // re-export types in public API
-pub use drift_program::{
+pub use drift::{
     controller::position::PositionDirection,
     state::{
         order_params::{ModifyOrderParams, OrderParams, PostOnlyParam},
@@ -351,8 +351,8 @@ impl MarketPrecision for PerpMarket {
 
 #[derive(Clone)]
 pub struct ClientOpts {
-    active_sub_account_id: u8,
-    sub_account_ids: Vec<u8>,
+    active_sub_account_id: u16,
+    sub_account_ids: Vec<u16>,
 }
 
 impl Default for ClientOpts {
@@ -365,7 +365,7 @@ impl Default for ClientOpts {
 }
 
 impl ClientOpts {
-    pub fn new(active_sub_account_id: u8, sub_account_ids: Option<Vec<u8>>) -> Self {
+    pub fn new(active_sub_account_id: u16, sub_account_ids: Option<Vec<u16>>) -> Self {
         let sub_account_ids = sub_account_ids.unwrap_or(vec![active_sub_account_id]);
         Self {
             active_sub_account_id,
@@ -373,18 +373,40 @@ impl ClientOpts {
         }
     }
 
-    pub fn active_sub_account_id(&self) -> u8 {
+    pub fn active_sub_account_id(&self) -> u16 {
         self.active_sub_account_id
     }
 
-    pub fn sub_account_ids(self) -> Vec<u8> {
+    pub fn sub_account_ids(self) -> Vec<u16> {
         self.sub_account_ids
+    }
+}
+
+pub struct ReferrerInfo {
+    referrer: Pubkey,
+    referrer_stats: Pubkey,
+}
+
+impl ReferrerInfo {
+    pub fn new(referrer: Pubkey, referrer_stats: Pubkey) -> Self {
+        Self {
+            referrer,
+            referrer_stats,
+        }
+    }
+
+    pub fn referrer(&self) -> Pubkey {
+        self.referrer
+    }
+
+    pub fn referrer_stats(&self) -> Pubkey {
+        self.referrer_stats
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use drift_program::error::ErrorCode;
+    use drift::error::ErrorCode;
     use solana_client::{
         client_error::{ClientError, ClientErrorKind},
         rpc_request::{RpcError, RpcRequest},

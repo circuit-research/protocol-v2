@@ -4,7 +4,7 @@
 use std::ops::Neg;
 
 use anchor_lang::{prelude::AccountInfo, AnchorDeserialize};
-use drift_program::{
+use drift::{
     ids::pyth_program,
     instructions::optional_accounts::AccountMaps,
     math::{
@@ -300,7 +300,7 @@ mod tests {
 
     use anchor_lang::{Owner, ZeroCopy};
     use bytes::BytesMut;
-    use drift_program::{
+    use drift::{
         math::constants::{
             AMM_RESERVE_PRECISION, LIQUIDATION_FEE_PRECISION, PEG_PRECISION,
             SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
