@@ -308,7 +308,6 @@ mod tests {
         state::{
             oracle::{HistoricalOracleData, OracleSource},
             perp_market::{MarketStatus, AMM},
-            spot_market::SpotBalanceType,
             user::SpotPosition,
         },
     };
@@ -418,7 +417,9 @@ mod tests {
             .get_user_account(&wallet.default_sub_account())
             .await
             .unwrap();
-        dbg!(calculate_liquidation_price(&client, &user, 0).await);
+        dbg!(calculate_liquidation_price(&client, &user, 0)
+            .await
+            .unwrap());
     }
 
     #[test]
