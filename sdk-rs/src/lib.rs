@@ -445,7 +445,7 @@ impl<T: AccountProvider> DriftClient<T> {
         self.backend.get_account(account).await
     }
 
-    /// Get your user account data
+    /// Get the _active_ user account data
     ///
     /// Returns the deserialized account data (`User`)
     pub async fn get_user(&self) -> SdkResult<User> {
