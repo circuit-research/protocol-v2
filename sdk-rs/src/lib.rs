@@ -2,7 +2,7 @@
 
 use std::{borrow::Cow, sync::Arc, time::Duration};
 
-use anchor_lang::{AccountDeserialize, Discriminator, InstructionData, ToAccountMetas};
+use anchor_lang::{AccountDeserialize, Accounts, Discriminator, InstructionData, ToAccountMetas};
 use async_utils::{retry_policy, spawn_retry_task};
 use constants::derive_perp_market_account;
 use drift::{
@@ -932,6 +932,76 @@ impl<'a> TransactionBuilder<'a> {
         self
     }
 
+    pub fn place_and_take_perp(mut self, params: OrderParams, maker_info: Option<MakerInfo>) -> Self {
+        let mut accounts = build_accounts(
+            self.program_data,
+            drift_program::accounts::PlaceAndTake {
+                state: *state_account(),
+                user: self.sub_account,
+                user_stats: Wallet::derive_stats_account(&self.authority, &constants::PROGRAM_ID),
+                authority: self.authority
+            },
+            &[self.account_data.as_ref()],
+            &[],
+            &[MarketId::perp(params.market_index)]
+        );
+
+        let mut maker_order_id: Option<u32> = None;
+
+        if let Some(maker_info) = maker_info {
+            maker_order_id = Some(maker_info.order().order_id);
+            accounts.push(AccountMeta::new(maker_info.maker(), false));
+        }
+
+        let ix = Instruction {
+            program_id: constants::PROGRAM_ID,
+            accounts,
+            data: InstructionData::data(&drift_program::instruction::PlaceAndTakePerpOrder {
+                params,
+                maker_order_id,
+            })
+        };
+
+        self.ixs.push(ix);
+
+        self
+    }
+
+    pub fn place_and_make_perp(mut self, params: OrderParams, taker_info: TakerInfo, referrer_info: Option<ReferrerInfo>) -> Self {
+        let mut accounts = build_accounts(
+            self.program_data,
+            drift_program::accounts::PlaceAndMake {
+                state: *state_account(),
+                user: self.sub_account,
+                user_stats: Wallet::derive_stats_account(&self.authority, &constants::PROGRAM_ID),
+                taker: taker_info.taker(),
+                taker_stats: taker_info.taker_stats(),
+                authority: self.authority
+            },
+            &[self.account_data.as_ref(), &taker_info.taker_user_account()],
+            &[],
+            &[MarketId::perp(params.market_index)]
+        );
+
+        if let Some(referrer_info) = referrer_info {
+            accounts.push(AccountMeta::new(referrer_info.referrer(), false));
+            accounts.push(AccountMeta::new(referrer_info.referrer_stats(), false))
+        }
+
+        let ix = Instruction {
+            program_id: constants::PROGRAM_ID,
+            accounts,
+            data: InstructionData::data(&drift_program::instruction::PlaceAndMakePerpOrder {
+                params,
+                taker_order_id: taker_info.order().order_id
+            })
+        };
+
+        self.ixs.push(ix);
+
+        self
+    }
+
     /// Place new orders for account
     pub fn place_orders(mut self, orders: Vec<OrderParams>) -> Self {
         let readable_accounts: Vec<MarketId> = orders
@@ -1339,8 +1409,8 @@ pub fn build_accounts(
         include_market(*index, *kind, false);
     }
 
+    // Drift program performs margin checks which requires reading user positions
     for user in users {
-        // Drift program performs margin checks which requires reading user positions
         for p in user.spot_positions.iter().filter(|p| !p.is_available()) {
             include_market(p.market_index, MarketType::Spot, false);
         }
