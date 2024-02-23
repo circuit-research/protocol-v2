@@ -685,6 +685,38 @@ mod tests {
         assert!(calculate_liquidation_price_inner(&user, 0, &mut accounts_map).is_err());
     }
 
+    #[test]
+    fn unrealized_pnl_long() {
+        let sol_perp_index = 0;
+        let position = PerpPosition {
+            market_index: sol_perp_index,
+            base_asset_amount: 5 * BASE_PRECISION_I64,
+            quote_entry_amount: 5 * (80 * QUOTE_PRECISION_I64),
+            ..Default::default()
+        };
+        let mut sol_oracle_price = get_pyth_price(100, 6);
+        crate::create_account_info!(sol_oracle_price, &SOL_ORACLE, &pyth::ID, sol_oracle);
+        crate::create_anchor_account_info!(
+            usdc_spot_market(),
+            &constants::PROGRAM_ID,
+            SpotMarket,
+            usdc_spot
+        );
+        crate::create_anchor_account_info!(
+            sol_perp_market(),
+            &constants::PROGRAM_ID,
+            PerpMarket,
+            sol_perp
+        );
+        let mut accounts_map =
+            build_account_map(&mut [sol_perp], &mut [usdc_spot], &mut [sol_oracle]);
+        let unrealized_pnl =
+            calculate_unrealized_pnl_inner(&position, sol_perp_index, &mut accounts_map).unwrap();
+        dbg!(unrealized_pnl);
+        // entry at $80, upnl at $100
+        assert_eq!(unrealized_pnl, 20_i128 * QUOTE_PRECISION_I64 as i128);
+    }
+
     fn build_account_map<'a>(
         perp: &mut [AccountInfo<'a>],
         spot: &mut [AccountInfo<'a>],
