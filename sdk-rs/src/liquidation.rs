@@ -244,7 +244,7 @@ pub fn calculate_unrealized_pnl_inner(
         false,
     );
 
-    let (_perp_margin_requirement, weighted_pnl, _worst_case_base_asset_value) =
+    let (perp_margin_requirement, weighted_pnl, worst_case_base_asset_value) =
         calculate_perp_position_value_and_pnl(
             position,
             &perp_market,
@@ -393,8 +393,9 @@ mod tests {
     use bytes::BytesMut;
     use drift::{
         math::constants::{
-            AMM_RESERVE_PRECISION, LIQUIDATION_FEE_PRECISION, PEG_PRECISION,
-            SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
+            AMM_RESERVE_PRECISION, LIQUIDATION_FEE_PRECISION, PEG_PRECISION, PRICE_PRECISION,
+            PRICE_PRECISION_I64, SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
+            SPOT_CUMULATIVE_INTEREST_PRECISION,
         },
         state::{
             oracle::{HistoricalOracleData, OracleSource},
@@ -447,6 +448,7 @@ mod tests {
             market_index: 0,
             margin_ratio_initial: 1000,
             margin_ratio_maintenance: 500,
+            unrealized_pnl_maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             status: MarketStatus::Initialized,
             ..PerpMarket::default()
         }
@@ -469,8 +471,8 @@ mod tests {
             margin_ratio_initial: 1000,
             margin_ratio_maintenance: 500,
             imf_factor: 1000, // 1_000/1_000_000 = .001
-            unrealized_pnl_initial_asset_weight: 10000,
-            unrealized_pnl_maintenance_asset_weight: 10000,
+            unrealized_pnl_initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            unrealized_pnl_maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
             status: MarketStatus::Initialized,
             ..PerpMarket::default()
         }
@@ -686,15 +688,49 @@ mod tests {
     }
 
     #[test]
+    fn unrealized_pnl_short() {
+        let sol_perp_index = 0;
+        let position = PerpPosition {
+            market_index: sol_perp_index,
+            base_asset_amount: -1 * BASE_PRECISION_I64,
+            quote_asset_amount: 80 * QUOTE_PRECISION_I64,
+            ..Default::default()
+        };
+        let mut sol_oracle_price = get_pyth_price(60, 6);
+
+        crate::create_account_info!(sol_oracle_price, &SOL_ORACLE, &pyth::ID, sol_oracle);
+        crate::create_anchor_account_info!(
+            usdc_spot_market(),
+            &constants::PROGRAM_ID,
+            SpotMarket,
+            usdc_spot
+        );
+        crate::create_anchor_account_info!(
+            sol_perp_market(),
+            &constants::PROGRAM_ID,
+            PerpMarket,
+            sol_perp
+        );
+        let mut accounts_map =
+            build_account_map(&mut [sol_perp], &mut [usdc_spot], &mut [sol_oracle]);
+        let unrealized_pnl =
+            calculate_unrealized_pnl_inner(&position, sol_perp_index, &mut accounts_map).unwrap();
+        dbg!(unrealized_pnl);
+        // entry at $80, upnl at $60
+        assert_eq!(unrealized_pnl, 20_i128 * QUOTE_PRECISION_I64 as i128);
+    }
+
+    #[test]
     fn unrealized_pnl_long() {
         let sol_perp_index = 0;
         let position = PerpPosition {
             market_index: sol_perp_index,
-            base_asset_amount: 5 * BASE_PRECISION_I64,
-            quote_entry_amount: 5 * (80 * QUOTE_PRECISION_I64),
+            base_asset_amount: 1 * BASE_PRECISION_I64,
+            quote_asset_amount: -80 * QUOTE_PRECISION_I64,
             ..Default::default()
         };
         let mut sol_oracle_price = get_pyth_price(100, 6);
+
         crate::create_account_info!(sol_oracle_price, &SOL_ORACLE, &pyth::ID, sol_oracle);
         crate::create_anchor_account_info!(
             usdc_spot_market(),

@@ -102,17 +102,13 @@ impl WebsocketProgramAccountSubscriber {
             ..RpcProgramAccountsConfig::default()
         };
 
-        let mut latest_slot = 0;
-
         let pubsub = PubsubClient::new(&self.url).await?;
-
-        let event_emitter = self.event_emitter.clone();
-
         let (unsub_tx, mut unsub_rx) = tokio::sync::mpsc::channel::<()>(1);
-
         self.unsubscriber = Some(unsub_tx);
 
         tokio::spawn({
+            let event_emitter = self.event_emitter.clone();
+            let mut latest_slot = 0;
             let subscription_name = self.subscription_name;
             async move {
                 let (mut accounts, unsubscriber) = pubsub
