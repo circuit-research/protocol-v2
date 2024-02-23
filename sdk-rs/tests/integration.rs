@@ -1,21 +1,22 @@
-use std::str::FromStr;
-
-use drift_program::math::constants::{
-    BASE_PRECISION_I64, LAMPORTS_PER_SOL_I64, PRICE_PRECISION_U64,
-};
+use drift::math::constants::{BASE_PRECISION_I64, LAMPORTS_PER_SOL_I64, PRICE_PRECISION_U64};
 use drift_sdk::{
     types::{ClientOpts, Context, MarketId, NewOrder},
-    DriftClient, Pubkey, RpcAccountProvider, TransactionBuilder, Wallet,
+    DriftClient, RpcAccountProvider, Wallet,
 };
-use solana_sdk::{signature::Keypair, signer::Signer};
-use spl_associated_token_account::get_associated_token_address;
+use solana_sdk::signature::Keypair;
+
+/// keypair for integration tests
+fn test_keypair() -> Keypair {
+    let private_key = std::env::var("TEST_PRIVATE_KEY").expect("TEST_PRIVATE_KEY set");
+    Keypair::from_base58_string(private_key.as_str())
+}
 
 #[tokio::test]
 async fn get_oracle_prices() {
     let client = DriftClient::new_with_opts(
         Context::DevNet,
         RpcAccountProvider::new("https://api.devnet.solana.com"),
-        Keypair::new(),
+        Keypair::new().into(),
         ClientOpts::default(),
     )
     .await
@@ -33,16 +34,13 @@ async fn place_and_cancel_orders() {
     let client = DriftClient::new_with_opts(
         Context::DevNet,
         RpcAccountProvider::new("https://api.devnet.solana.com"),
-        Keypair::new(),
+        Keypair::new().into(),
         ClientOpts::default(),
     )
     .await
     .expect("connects");
 
-    let wallet = Wallet::from_seed_bs58(
-        "4ZT38mSeFhzzDRCMTMbwDp7VYWDqNfkvDR42Wv4Hu9cKzbZPJoVapQSrjLbs9aMPrpAMmN1cQinztnP2PzKVjzwX",
-    );
-
+    let wallet: Wallet = test_keypair().into();
     let sol_perp = client.market_lookup("sol-perp").expect("exists");
     let sol_spot = client.market_lookup("sol").expect("exists");
 

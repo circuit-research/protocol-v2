@@ -1,8 +1,9 @@
 use std::cmp::Ordering;
 
 use drift_program::{error::ErrorCode, state::user::User};
+use anchor_lang::AccountDeserialize;
 // re-export types in public API
-pub use drift_program::{
+pub use drift::{
     controller::position::PositionDirection,
     state::{
         order_params::{ModifyOrderParams, OrderParams, PostOnlyParam},
@@ -36,7 +37,10 @@ pub enum Context {
 }
 
 #[derive(Debug, Clone)]
-pub struct DataAndSlot<T> {
+pub struct DataAndSlot<T>
+where
+    T: AccountDeserialize,
+{
     pub slot: u64,
     pub data: T,
 }
@@ -67,8 +71,8 @@ impl MarketId {
     /// `MarketId` for the USDC Spot Market
     pub const QUOTE_SPOT: Self = Self {
         index: 0,
-        kind: MarketType::Spot
-      };
+        kind: MarketType::Spot,
+    };
 }
 
 impl From<(u16, MarketType)> for MarketId {
@@ -199,6 +203,8 @@ pub enum SdkError {
     InvalidSeed,
     #[error("invalid base58 value")]
     InvalidBase58,
+    #[error("user does not have position: {0}")]
+    NoPosiiton(u16),
     #[error("insufficient SOL balance for fees")]
     OutOfSOL,
     #[error("{0}")]
@@ -347,33 +353,33 @@ impl MarketPrecision for PerpMarket {
 
 #[derive(Clone)]
 pub struct ClientOpts {
-    active_sub_account_id: u8,
-    sub_account_ids: Vec<u8>,
+    active_sub_account_id: u16,
+    sub_account_ids: Vec<u16>,
 }
 
 impl Default for ClientOpts {
     fn default() -> Self {
         Self {
             active_sub_account_id: 0,
-            sub_account_ids: vec![0]
+            sub_account_ids: vec![0],
         }
     }
 }
 
 impl ClientOpts {
-    pub fn new(active_sub_account_id: u8, sub_account_ids: Option<Vec<u8>>) -> Self {
+    pub fn new(active_sub_account_id: u16, sub_account_ids: Option<Vec<u16>>) -> Self {
         let sub_account_ids = sub_account_ids.unwrap_or(vec![active_sub_account_id]);
         Self {
             active_sub_account_id,
-            sub_account_ids
+            sub_account_ids,
         }
     }
 
-    pub fn active_sub_account_id(self) -> u8 {
+    pub fn active_sub_account_id(&self) -> u16 {
         self.active_sub_account_id
     }
 
-    pub fn sub_account_ids(self) -> Vec<u8>  {
+    pub fn sub_account_ids(self) -> Vec<u16> {
         self.sub_account_ids
     }
 }
@@ -467,9 +473,10 @@ impl ReferrerInfo {
         self.referrer_stats
     }
 }
+
 #[cfg(test)]
 mod tests {
-    use drift_program::error::ErrorCode;
+    use drift::error::ErrorCode;
     use solana_client::{
         client_error::{ClientError, ClientErrorKind},
         rpc_request::{RpcError, RpcRequest},

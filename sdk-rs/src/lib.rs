@@ -4,9 +4,10 @@ use std::{borrow::Cow, sync::Arc, time::Duration};
 
 use anchor_lang::{AccountDeserialize, Accounts, Discriminator, InstructionData, ToAccountMetas};
 use async_utils::{retry_policy, spawn_retry_task};
-use drift_program::{
+use constants::derive_perp_market_account;
+use drift::{
     controller::position::PositionDirection,
-    math::constants::QUOTE_SPOT_MARKET_INDEX,
+    instructions::SpotFulfillmentType,
     state::{
         oracle::get_oracle_price,
         order_params::{ModifyOrderParams, OrderParams},
@@ -27,14 +28,12 @@ use solana_client::{
 use solana_sdk::{
     account::Account,
     account_info::IntoAccountInfo,
+    clock::Slot,
     commitment_config::{CommitmentConfig, CommitmentLevel},
     compute_budget::ComputeBudgetInstruction,
     hash::Hash,
     instruction::{AccountMeta, Instruction},
-    message::{
-        v0::{self},
-        Message, VersionedMessage,
-    },
+    message::{v0, Message, VersionedMessage},
     signature::{keypair_from_seed, Keypair, Signature},
     signer::Signer,
     transaction::VersionedTransaction,
@@ -46,23 +45,33 @@ use tokio::{
         watch::{self, Receiver},
         RwLock,
     },
-    time::Instant,
 };
 
 use crate::constants::{
     derive_spot_market_account, market_lookup_table, state_account, MarketExt, ProgramData,
 };
 
+// utils
 pub mod async_utils;
-pub mod constants;
-pub mod dlob;
-pub mod event_subscriber;
-pub mod types;
-use types::*;
-pub mod auction_subscriber;
+pub mod liquidation;
 pub mod memcmp;
 pub mod utils;
+
+// constants & types
+pub mod constants;
+pub mod types;
+
+// internal infra
+pub mod event_emitter;
 pub mod websocket_program_account_subscriber;
+
+// subscribers
+pub mod auction_subscriber;
+pub mod dlob;
+pub mod event_subscriber;
+pub mod slot_subscriber;
+
+use types::*;
 
 /// Provides solana Account fetching API
 pub trait AccountProvider: 'static + Sized + Send + Sync {
@@ -76,8 +85,9 @@ pub trait AccountProvider: 'static + Sized + Send + Sync {
 }
 
 /// Account provider that always fetches from RPC
+#[derive(Clone)]
 pub struct RpcAccountProvider {
-    client: RpcClient,
+    client: Arc<RpcClient>,
 }
 
 impl RpcAccountProvider {
@@ -87,7 +97,10 @@ impl RpcAccountProvider {
     /// Create a new RPC account provider with provided commitment level
     pub fn with_commitment(endpoint: &str, commitment: CommitmentConfig) -> Self {
         Self {
-            client: RpcClient::new_with_commitment(endpoint.to_string(), commitment),
+            client: Arc::new(RpcClient::new_with_commitment(
+                endpoint.to_string(),
+                commitment,
+            )),
         }
     }
     async fn get_account_impl(&self, account: Pubkey) -> SdkResult<Account> {
@@ -113,7 +126,7 @@ pub struct WsAccountProvider {
     rpc_client: Arc<RpcClient>,
     ws_client: Arc<PubsubClient>,
     /// map from account pubkey to (account data, last modified ts)
-    account_cache: RwLock<FnvHashMap<Pubkey, Receiver<(Account, Instant)>>>,
+    account_cache: RwLock<FnvHashMap<Pubkey, Receiver<(Account, Slot)>>>,
 }
 
 struct AccountSubscription {
@@ -121,7 +134,7 @@ struct AccountSubscription {
     ws_client: Arc<PubsubClient>,
     rpc_client: Arc<RpcClient>,
     /// sink for account updates
-    tx: Arc<watch::Sender<(Account, Instant)>>,
+    tx: Arc<watch::Sender<(Account, Slot)>>,
 }
 
 impl AccountSubscription {
@@ -153,11 +166,21 @@ impl AccountSubscription {
                 biased;
                 response = account_stream.next() => {
                     if let Some(account_update) = response {
+                        let slot = account_update.context.slot;
                         let account_data = account_update
                             .value
                             .decode::<Account>()
                             .expect("account");
-                        let _ = self.tx.send_replace((account_data, Instant::now()));
+                        self.tx.send_if_modified(|current| {
+                            if slot > current.1 {
+                                debug!(target: "account", "stream update writing to cache");
+                                *current = (account_data, slot);
+                                true
+                            } else {
+                                debug!(target: "account", "stream update old");
+                               false
+                            }
+                        });
                     } else {
                         // websocket subscription/stream closed, try reconnect..
                         warn!(target: "account", "account stream closed: {:?}", self.account);
@@ -165,13 +188,16 @@ impl AccountSubscription {
                     }
                 }
                 _ = poll_interval.tick() => {
-                    if let Ok(account_data) = self.rpc_client.get_account(&self.account).await {
+                    if let Ok(account_data) = self.rpc_client.get_account_with_config(&self.account, Default::default()).await {
                         self.tx.send_if_modified(|current| {
+                            let slot = account_data.context.slot;
                             // only update with polled value if its newer
-                            if Instant::now().duration_since(current.1) >= poll_interval.period() {
-                                *current = (account_data, Instant::now());
+                            if slot > current.1 {
+                                debug!(target: "account", "poll update, writing to cache");
+                                *current = (account_data.value.unwrap(), slot);
                                 true
                             } else {
+                                debug!(target: "account", "poll update, too old");
                                 false
                             }
                         });
@@ -203,7 +229,7 @@ impl WsAccountProvider {
         })
     }
     /// Subscribe to account updates via web-socket and polling
-    fn subscribe_account(&self, account: Pubkey, tx: watch::Sender<(Account, Instant)>) {
+    fn subscribe_account(&self, account: Pubkey, tx: watch::Sender<(Account, Slot)>) {
         let ws_client = Arc::clone(&self.ws_client);
         let rpc_client = Arc::clone(&self.rpc_client);
         let tx = Arc::new(tx);
@@ -232,7 +258,7 @@ impl WsAccountProvider {
 
         // fetch initial account data, stream only updates on changes
         let account_data: Account = self.rpc_client.get_account(&account).await?;
-        let (tx, rx) = watch::channel((account_data.clone(), Instant::now()));
+        let (tx, rx) = watch::channel((account_data.clone(), 0));
         {
             let mut cache = self.account_cache.write().await;
             cache.insert(account, rx);
@@ -265,39 +291,28 @@ impl AccountProvider for WsAccountProvider {
 pub struct DriftClient<T: AccountProvider> {
     backend: &'static DriftClientBackend<T>,
     wallet: Wallet,
-    pub active_sub_account_id: u8,
-    pub sub_account_ids: Vec<u8>,
+    pub active_sub_account_id: u16,
+    pub sub_account_ids: Vec<u16>,
 }
 
 impl<T: AccountProvider> DriftClient<T> {
-    pub async fn new(
-        context: Context, 
-        account_provider: T, 
-        keypair: Keypair, 
-    ) -> SdkResult<Self> {
-        Ok(Self {
-            backend: Box::leak(Box::new(
-                DriftClientBackend::new(context, account_provider).await?,
-            )),
-            wallet: Wallet::new(keypair),
-            active_sub_account_id: 0,
-            sub_account_ids: vec![0],
-        })
+    pub async fn new(context: Context, account_provider: T, wallet: Wallet) -> SdkResult<Self> {
+        Self::new_with_opts(context, account_provider, wallet, ClientOpts::default()).await
     }
 
     pub async fn new_with_opts(
         context: Context,
         account_provider: T,
-        keypair: Keypair,
-        opts: ClientOpts
+        wallet: Wallet,
+        opts: ClientOpts,
     ) -> SdkResult<Self> {
         Ok(Self {
             backend: Box::leak(Box::new(
-                DriftClientBackend::new(context, account_provider).await?
-                )),
-            wallet: Wallet::new(keypair),
-            active_sub_account_id: opts.clone().active_sub_account_id(),
-            sub_account_ids: opts.clone().sub_account_ids(),
+                DriftClientBackend::new(context, account_provider).await?,
+            )),
+            wallet,
+            active_sub_account_id: opts.active_sub_account_id(),
+            sub_account_ids: opts.sub_account_ids(),
         })
     }
 
@@ -312,7 +327,7 @@ impl<T: AccountProvider> DriftClient<T> {
     }
 
     /// Get the active sub account id
-    pub fn get_sub_account_id_for_ix(&self, sub_account_id: Option<u8>) -> u8 {
+    pub fn get_sub_account_id_for_ix(&self, sub_account_id: Option<u16>) -> u16 {
         sub_account_id.unwrap_or(self.active_sub_account_id)
     }
 
@@ -398,7 +413,7 @@ impl<T: AccountProvider> DriftClient<T> {
         Ok(user
             .perp_positions
             .iter()
-            .find(|p| p.market_index == market_index)
+            .find(|p| p.market_index == market_index && !p.is_available())
             .copied())
     }
 
@@ -417,7 +432,7 @@ impl<T: AccountProvider> DriftClient<T> {
         Ok(user
             .spot_positions
             .iter()
-            .find(|p| p.market_index == market_index)
+            .find(|p| p.market_index == market_index && !p.is_available())
             .copied())
     }
 
@@ -435,14 +450,22 @@ impl<T: AccountProvider> DriftClient<T> {
         self.backend.get_account(account).await
     }
 
+    /// Get the _active_ user account data
+    ///
+    /// Returns the deserialized account data (`User`)
+    pub async fn get_user(&self) -> SdkResult<User> {
+        let user_pubkey = Wallet::derive_user_account(
+            self.wallet().authority(),
+            self.active_sub_account_id,
+            &constants::PROGRAM_ID,
+        );
+        self.backend.get_account(&user_pubkey).await
+    }
+
     /// Sign and send a tx to the network
     ///
     /// Returns the signature on success
-    pub async fn sign_and_send(
-        &self,
-        tx: VersionedMessage,
-    ) -> SdkResult<Signature> {
-        
+    pub async fn sign_and_send(&self, tx: VersionedMessage) -> SdkResult<Signature> {
         self.backend
             .sign_and_send(self.wallet(), tx)
             .await
@@ -466,6 +489,12 @@ impl<T: AccountProvider> DriftClient<T> {
     /// Get live info of a spot market
     pub async fn get_spot_market_info(&self, market_index: u16) -> SdkResult<SpotMarket> {
         let market = derive_spot_market_account(market_index);
+        self.backend.get_account(&market).await
+    }
+
+    /// Get live info of a perp market
+    pub async fn get_perp_market_info(&self, market_index: u16) -> SdkResult<PerpMarket> {
+        let market = derive_perp_market_account(market_index);
         self.backend.get_account(&market).await
     }
 
@@ -813,44 +842,50 @@ impl<'a> TransactionBuilder<'a> {
     }
     /// Set the priority fee of the tx
     ///
-    /// `priority_fee` the price per unit of compute in µ-lamports, default = 5 µ-lamports
-    pub fn with_priority_fee(mut self, microlamports_per_cu: u64, cu_limit: u32) -> Self {
+    /// `microlamports_per_cu` the price per unit of compute in µ-lamports
+    pub fn with_priority_fee(mut self, microlamports_per_cu: u64, cu_limit: Option<u32>) -> Self {
         let cu_limit_ix = ComputeBudgetInstruction::set_compute_unit_price(microlamports_per_cu);
-        let cu_price_ix = ComputeBudgetInstruction::set_compute_unit_limit(cu_limit);
-
         self.ixs.insert(0, cu_limit_ix);
-        self.ixs.insert(1, cu_price_ix);
+        if let Some(cu_limit) = cu_limit {
+            let cu_price_ix = ComputeBudgetInstruction::set_compute_unit_limit(cu_limit);
+            self.ixs.insert(1, cu_price_ix);
+        }
 
         self
     }
 
     /// Deposit collateral into account
-    pub fn deposit(mut self, amount: u64, spot_market_index: u16, user_token_account: Pubkey, reduce_only: Option<bool>) -> Self {
-
+    pub fn deposit(
+        mut self,
+        amount: u64,
+        spot_market_index: u16,
+        user_token_account: Pubkey,
+        reduce_only: Option<bool>,
+    ) -> Self {
         let accounts = build_accounts(
             self.program_data,
-            drift_program::accounts::Deposit {
+            drift::accounts::Deposit {
                 state: *state_account(),
                 user: self.sub_account,
                 user_stats: Wallet::derive_stats_account(&self.authority, &constants::PROGRAM_ID),
                 authority: self.authority,
                 spot_market_vault: constants::derive_spot_market_vault(spot_market_index),
                 user_token_account,
-                token_program: *constants::TOKEN_PROGRAM_ID,
+                token_program: constants::TOKEN_PROGRAM_ID,
             },
             &[self.account_data.as_ref()],
             &[],
-            &[MarketId::spot(spot_market_index)]
+            &[MarketId::spot(spot_market_index)],
         );
 
         let ix = Instruction {
             program_id: constants::PROGRAM_ID,
             accounts,
-            data: InstructionData::data(&drift_program::instruction::Deposit {
+            data: InstructionData::data(&drift::instruction::Deposit {
                 market_index: spot_market_index,
                 amount,
-                reduce_only: reduce_only.unwrap_or(false)
-            })
+                reduce_only: reduce_only.unwrap_or(false),
+            }),
         };
 
         self.ixs.push(ix);
@@ -858,10 +893,16 @@ impl<'a> TransactionBuilder<'a> {
         self
     }
 
-    pub fn withdraw(mut self, amount: u64, spot_market_index: u16, user_token_account: Pubkey, reduce_only: Option<bool>) -> Self {
+    pub fn withdraw(
+        mut self,
+        amount: u64,
+        spot_market_index: u16,
+        user_token_account: Pubkey,
+        reduce_only: Option<bool>,
+    ) -> Self {
         let accounts = build_accounts(
             self.program_data,
-            drift_program::accounts::Withdraw {
+            drift::accounts::Withdraw {
                 state: *state_account(),
                 user: self.sub_account,
                 user_stats: Wallet::derive_stats_account(&self.authority, &constants::PROGRAM_ID),
@@ -869,21 +910,21 @@ impl<'a> TransactionBuilder<'a> {
                 spot_market_vault: constants::derive_spot_market_vault(spot_market_index),
                 user_token_account,
                 drift_signer: constants::derive_drift_signer(),
-                token_program: *constants::TOKEN_PROGRAM_ID
+                token_program: constants::TOKEN_PROGRAM_ID,
             },
             &[self.account_data.as_ref()],
             &[],
-            &[MarketId::spot(spot_market_index)]
+            &[MarketId::spot(spot_market_index)],
         );
 
         let ix = Instruction {
             program_id: constants::PROGRAM_ID,
             accounts,
-            data: InstructionData::data(&drift_program::instruction::Withdraw {
+            data: InstructionData::data(&drift::instruction::Withdraw {
                 market_index: spot_market_index,
                 amount,
-                reduce_only: reduce_only.unwrap_or(false)
-            })
+                reduce_only: reduce_only.unwrap_or(false),
+            }),
         };
 
         self.ixs.push(ix);
@@ -970,7 +1011,7 @@ impl<'a> TransactionBuilder<'a> {
 
         let accounts = build_accounts(
             self.program_data,
-            drift_program::accounts::PlaceOrder {
+            drift::accounts::PlaceOrder {
                 state: *state_account(),
                 authority: self.authority,
                 user: self.sub_account,
@@ -983,9 +1024,7 @@ impl<'a> TransactionBuilder<'a> {
         let ix = Instruction {
             program_id: constants::PROGRAM_ID,
             accounts,
-            data: InstructionData::data(&drift_program::instruction::PlaceOrders {
-                params: orders,
-            }),
+            data: InstructionData::data(&drift::instruction::PlaceOrders { params: orders }),
         };
 
         self.ixs.push(ix);
@@ -997,7 +1036,7 @@ impl<'a> TransactionBuilder<'a> {
     pub fn cancel_all_orders(mut self) -> Self {
         let accounts = build_accounts(
             self.program_data,
-            drift_program::accounts::CancelOrder {
+            drift::accounts::CancelOrder {
                 state: *state_account(),
                 authority: self.authority,
                 user: self.sub_account,
@@ -1010,7 +1049,7 @@ impl<'a> TransactionBuilder<'a> {
         let ix = Instruction {
             program_id: constants::PROGRAM_ID,
             accounts,
-            data: InstructionData::data(&drift_program::instruction::CancelOrders {
+            data: InstructionData::data(&drift::instruction::CancelOrders {
                 market_index: None,
                 market_type: None,
                 direction: None,
@@ -1034,7 +1073,7 @@ impl<'a> TransactionBuilder<'a> {
         let (idx, kind) = market;
         let accounts = build_accounts(
             self.program_data,
-            drift_program::accounts::CancelOrder {
+            drift::accounts::CancelOrder {
                 state: *state_account(),
                 authority: self.authority,
                 user: self.sub_account,
@@ -1047,7 +1086,7 @@ impl<'a> TransactionBuilder<'a> {
         let ix = Instruction {
             program_id: constants::PROGRAM_ID,
             accounts,
-            data: InstructionData::data(&drift_program::instruction::CancelOrders {
+            data: InstructionData::data(&drift::instruction::CancelOrders {
                 market_index: Some(idx),
                 market_type: Some(kind),
                 direction,
@@ -1062,7 +1101,7 @@ impl<'a> TransactionBuilder<'a> {
     pub fn cancel_orders_by_id(mut self, order_ids: Vec<u32>) -> Self {
         let accounts = build_accounts(
             self.program_data,
-            drift_program::accounts::CancelOrder {
+            drift::accounts::CancelOrder {
                 state: *state_account(),
                 authority: self.authority,
                 user: self.sub_account,
@@ -1075,9 +1114,7 @@ impl<'a> TransactionBuilder<'a> {
         let ix = Instruction {
             program_id: constants::PROGRAM_ID,
             accounts,
-            data: InstructionData::data(&drift_program::instruction::CancelOrdersByIds {
-                order_ids,
-            }),
+            data: InstructionData::data(&drift::instruction::CancelOrdersByIds { order_ids }),
         };
         self.ixs.push(ix);
 
@@ -1088,7 +1125,7 @@ impl<'a> TransactionBuilder<'a> {
     pub fn cancel_orders_by_user_id(mut self, user_order_ids: Vec<u8>) -> Self {
         let accounts = build_accounts(
             self.program_data,
-            drift_program::accounts::CancelOrder {
+            drift::accounts::CancelOrder {
                 state: *state_account(),
                 authority: self.authority,
                 user: self.sub_account,
@@ -1102,7 +1139,7 @@ impl<'a> TransactionBuilder<'a> {
             let ix = Instruction {
                 program_id: constants::PROGRAM_ID,
                 accounts: accounts.clone(),
-                data: InstructionData::data(&drift_program::instruction::CancelOrderByUserId {
+                data: InstructionData::data(&drift::instruction::CancelOrderByUserId {
                     user_order_id,
                 }),
             };
@@ -1117,7 +1154,7 @@ impl<'a> TransactionBuilder<'a> {
         for (order_id, params) in orders {
             let accounts = build_accounts(
                 self.program_data,
-                drift_program::accounts::PlaceOrder {
+                drift::accounts::PlaceOrder {
                     state: *state_account(),
                     authority: self.authority,
                     user: self.sub_account,
@@ -1130,7 +1167,7 @@ impl<'a> TransactionBuilder<'a> {
             let ix = Instruction {
                 program_id: constants::PROGRAM_ID,
                 accounts,
-                data: InstructionData::data(&drift_program::instruction::ModifyOrder {
+                data: InstructionData::data(&drift::instruction::ModifyOrder {
                     order_id: Some(*order_id),
                     modify_order_params: params.clone(),
                 }),
@@ -1146,7 +1183,7 @@ impl<'a> TransactionBuilder<'a> {
         for (user_order_id, params) in orders {
             let accounts = build_accounts(
                 self.program_data,
-                drift_program::accounts::PlaceOrder {
+                drift::accounts::PlaceOrder {
                     state: *state_account(),
                     authority: self.authority,
                     user: self.sub_account,
@@ -1159,7 +1196,7 @@ impl<'a> TransactionBuilder<'a> {
             let ix = Instruction {
                 program_id: constants::PROGRAM_ID,
                 accounts,
-                data: InstructionData::data(&drift_program::instruction::ModifyOrderByUserId {
+                data: InstructionData::data(&drift::instruction::ModifyOrderByUserId {
                     user_order_id: *user_order_id,
                     modify_order_params: params.clone(),
                 }),
@@ -1167,6 +1204,106 @@ impl<'a> TransactionBuilder<'a> {
             self.ixs.push(ix);
         }
 
+        self
+    }
+
+    /// Add a place and make instruction
+    ///
+    /// `order` the order to place
+    /// `taker` taker account address
+    /// `taker_order_id` the id of the taker's order to match with
+    /// `fulfilment_type` type of fill for spot orders, ignored for perp orders
+    pub fn place_and_make(
+        mut self,
+        order: OrderParams,
+        taker: &Pubkey,
+        taker_order_id: u32,
+        fulfillment_type: Option<SpotFulfillmentType>,
+    ) -> Self {
+        let accounts = build_accounts(
+            self.program_data,
+            drift::accounts::PlaceAndMake {
+                state: *state_account(),
+                authority: self.authority,
+                user: self.sub_account,
+                user_stats: Wallet::derive_stats_account(&self.sub_account, &constants::PROGRAM_ID),
+                taker: *taker,
+                taker_stats: Wallet::derive_stats_account(taker, &constants::PROGRAM_ID),
+            },
+            &[self.account_data.as_ref()],
+            &[],
+            &[],
+        );
+
+        let ix = if order.market_type == MarketType::Perp {
+            Instruction {
+                program_id: constants::PROGRAM_ID,
+                accounts,
+                data: InstructionData::data(&drift::instruction::PlaceAndMakePerpOrder {
+                    params: order,
+                    taker_order_id,
+                }),
+            }
+        } else {
+            Instruction {
+                program_id: constants::PROGRAM_ID,
+                accounts,
+                data: InstructionData::data(&drift::instruction::PlaceAndMakeSpotOrder {
+                    params: order,
+                    taker_order_id,
+                    fulfillment_type,
+                }),
+            }
+        };
+
+        self.ixs.push(ix);
+        self
+    }
+
+    /// Add a place and take instruction
+    ///
+    /// `order` the order to place
+    /// `fulfilment_type` type of fill for spot orders, ignored for perp orders
+    pub fn place_and_take(
+        mut self,
+        order: OrderParams,
+        fulfillment_type: Option<SpotFulfillmentType>,
+    ) -> Self {
+        let accounts = build_accounts(
+            self.program_data,
+            drift::accounts::PlaceAndTake {
+                state: *state_account(),
+                authority: self.authority,
+                user: self.sub_account,
+                user_stats: Wallet::derive_stats_account(&self.sub_account, &constants::PROGRAM_ID),
+            },
+            &[self.account_data.as_ref()],
+            &[],
+            &[],
+        );
+
+        let ix = if order.market_type == MarketType::Perp {
+            Instruction {
+                program_id: constants::PROGRAM_ID,
+                accounts,
+                data: InstructionData::data(&drift::instruction::PlaceAndTakePerpOrder {
+                    params: order,
+                    maker_order_id: None,
+                }),
+            }
+        } else {
+            Instruction {
+                program_id: constants::PROGRAM_ID,
+                accounts,
+                data: InstructionData::data(&drift::instruction::PlaceAndTakeSpotOrder {
+                    params: order,
+                    maker_order_id: None,
+                    fulfillment_type,
+                }),
+            }
+        };
+
+        self.ixs.push(ix);
         self
     }
 
@@ -1186,6 +1323,14 @@ impl<'a> TransactionBuilder<'a> {
             VersionedMessage::V0(message)
         }
     }
+
+    pub fn program_data(&self) -> &ProgramData {
+        self.program_data
+    }
+
+    pub fn account_data(&self) -> &Cow<'_, User> {
+        &self.account_data
+    }
 }
 
 /// Builds a set of required accounts from a user's open positions and additional given accounts
@@ -1200,7 +1345,7 @@ impl<'a> TransactionBuilder<'a> {
 ///
 /// # Panics
 ///  if the user has positions in an unknown market (i.e unsupported by the SDK)
-fn build_accounts(
+pub fn build_accounts(
     program_data: &ProgramData,
     base_accounts: impl ToAccountMetas,
     users: &[&User],
@@ -1273,10 +1418,9 @@ fn build_accounts(
             include_market(p.market_index, MarketType::Perp, false);
         }
     }
-
     // always manually try to include the quote (USDC) market
     // TODO: this is not exactly the same semantics as the TS sdk
-    include_market(QUOTE_SPOT_MARKET_INDEX, MarketType::Spot, false);
+    include_market(MarketId::QUOTE_SPOT.index, MarketType::Spot, false);
 
     let mut account_metas = base_accounts.to_account_metas(None);
     account_metas.extend(accounts.into_iter().map(Into::into));
@@ -1342,23 +1486,29 @@ impl Wallet {
         self.authority = authority;
     }
     /// Calculate the address of a drift user account/sub-account
-    pub fn derive_user_account(account: &Pubkey, sub_account_id: u16, program: &Pubkey) -> Pubkey {
+    pub fn derive_user_account(
+        authority: &Pubkey,
+        sub_account_id: u16,
+        program: &Pubkey,
+    ) -> Pubkey {
         let (account_drift_pda, _seed) = Pubkey::find_program_address(
             &[
                 &b"user"[..],
-                account.as_ref(),
+                authority.as_ref(),
                 &sub_account_id.to_le_bytes(),
             ],
             program,
         );
         account_drift_pda
     }
+
     /// Calculate the address of a drift stats account
     pub fn derive_stats_account(account: &Pubkey, program: &Pubkey) -> Pubkey {
         let (account_drift_pda, _seed) =
             Pubkey::find_program_address(&[&b"user_stats"[..], account.as_ref()], program);
         account_drift_pda
     }
+
     /// Signs the given tx `message` returning the tx on success
     pub fn sign_tx(
         &self,
@@ -1392,11 +1542,17 @@ impl Wallet {
     }
 }
 
+impl From<Keypair> for Wallet {
+    fn from(value: Keypair) -> Self {
+        Self::new(value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
 
-    use drift_program::state::perp_market::PerpMarket;
+    use drift::state::perp_market::PerpMarket;
     use serde_json::json;
     use solana_account_decoder::{UiAccount, UiAccountData};
     use solana_client::{
@@ -1415,7 +1571,7 @@ mod tests {
     async fn setup(
         rpc_mocks: Mocks,
         account_provider_mocks: Mocks,
-        keypair: Keypair
+        keypair: Keypair,
     ) -> DriftClient<RpcAccountProvider> {
         let backend = DriftClientBackend {
             rpc_client: RpcClient::new_mock_with_mocks(DEVNET_ENDPOINT.to_string(), rpc_mocks),
@@ -1438,9 +1594,13 @@ mod tests {
 
     #[tokio::test]
     async fn get_market_accounts() {
-        let client = DriftClient::new(Context::DevNet, RpcAccountProvider::new(DEVNET_ENDPOINT), Keypair::new())
-            .await
-            .unwrap();
+        let client = DriftClient::new(
+            Context::DevNet,
+            RpcAccountProvider::new(DEVNET_ENDPOINT),
+            Keypair::new().into(),
+        )
+        .await
+        .unwrap();
         let accounts: Vec<SpotMarket> = client
             .backend
             .get_program_accounts()
