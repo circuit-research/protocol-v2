@@ -85,8 +85,9 @@ pub trait AccountProvider: 'static + Sized + Send + Sync {
 }
 
 /// Account provider that always fetches from RPC
+#[derive(Clone)]
 pub struct RpcAccountProvider {
-    client: RpcClient,
+    client: Arc<RpcClient>,
 }
 
 impl RpcAccountProvider {
@@ -96,7 +97,10 @@ impl RpcAccountProvider {
     /// Create a new RPC account provider with provided commitment level
     pub fn with_commitment(endpoint: &str, commitment: CommitmentConfig) -> Self {
         Self {
-            client: RpcClient::new_with_commitment(endpoint.to_string(), commitment),
+            client: Arc::new(RpcClient::new_with_commitment(
+                endpoint.to_string(),
+                commitment,
+            )),
         }
     }
     async fn get_account_impl(&self, account: Pubkey) -> SdkResult<Account> {

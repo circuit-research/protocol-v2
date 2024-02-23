@@ -244,7 +244,7 @@ pub fn calculate_unrealized_pnl_inner(
         false,
     );
 
-    let (perp_margin_requirement, weighted_pnl, worst_case_base_asset_value) =
+    let (_perp_margin_requirement, weighted_pnl, _worst_case_base_asset_value) =
         calculate_perp_position_value_and_pnl(
             position,
             &perp_market,
