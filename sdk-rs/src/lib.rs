@@ -1193,12 +1193,10 @@ impl<'a> TransactionBuilder<'a> {
     /// Add a place and take instruction
     ///
     /// `order` the order to place
-    /// `maker_order_id` the id of the taker's order to match with
     /// `fulfilment_type` type of fill for spot orders, ignored for perp orders
     pub fn place_and_take(
         mut self,
         order: OrderParams,
-        maker_order_id: Option<u32>,
         fulfillment_type: Option<SpotFulfillmentType>,
     ) -> Self {
         let accounts = build_accounts(
@@ -1220,7 +1218,7 @@ impl<'a> TransactionBuilder<'a> {
                 accounts,
                 data: InstructionData::data(&drift::instruction::PlaceAndTakePerpOrder {
                     params: order,
-                    maker_order_id,
+                    maker_order_id: None,
                 }),
             }
         } else {
@@ -1229,7 +1227,7 @@ impl<'a> TransactionBuilder<'a> {
                 accounts,
                 data: InstructionData::data(&drift::instruction::PlaceAndTakeSpotOrder {
                     params: order,
-                    maker_order_id,
+                    maker_order_id: None,
                     fulfillment_type,
                 }),
             }
