@@ -7,6 +7,7 @@ use async_utils::{retry_policy, spawn_retry_task};
 use constants::derive_perp_market_account;
 use drift::{
     controller::position::PositionDirection,
+    instructions::SpotFulfillmentType,
     state::{
         oracle::get_oracle_price,
         order_params::{ModifyOrderParams, OrderParams},
@@ -1129,6 +1130,108 @@ impl<'a> TransactionBuilder<'a> {
             self.ixs.push(ix);
         }
 
+        self
+    }
+
+    /// Add a place and make instruction
+    ///
+    /// `order` the order to place
+    /// `taker` taker account address
+    /// `taker_order_id` the id of the taker's order to match with
+    /// `fulfilment_type` type of fill for spot orders, ignored for perp orders
+    pub fn place_and_make(
+        mut self,
+        order: OrderParams,
+        taker: &Pubkey,
+        taker_order_id: u32,
+        fulfillment_type: Option<SpotFulfillmentType>,
+    ) -> Self {
+        let accounts = build_accounts(
+            self.program_data,
+            drift::accounts::PlaceAndMake {
+                state: *state_account(),
+                authority: self.authority,
+                user: self.sub_account,
+                user_stats: Wallet::derive_stats_account(&self.sub_account, &constants::PROGRAM_ID),
+                taker: *taker,
+                taker_stats: Wallet::derive_stats_account(taker, &constants::PROGRAM_ID),
+            },
+            &[self.account_data.as_ref()],
+            &[],
+            &[],
+        );
+
+        let ix = if order.market_type == MarketType::Perp {
+            Instruction {
+                program_id: constants::PROGRAM_ID,
+                accounts,
+                data: InstructionData::data(&drift::instruction::PlaceAndMakePerpOrder {
+                    params: order,
+                    taker_order_id,
+                }),
+            }
+        } else {
+            Instruction {
+                program_id: constants::PROGRAM_ID,
+                accounts,
+                data: InstructionData::data(&drift::instruction::PlaceAndMakeSpotOrder {
+                    params: order,
+                    taker_order_id,
+                    fulfillment_type,
+                }),
+            }
+        };
+
+        self.ixs.push(ix);
+        self
+    }
+
+    /// Add a place and take instruction
+    ///
+    /// `order` the order to place
+    /// `maker_order_id` the id of the taker's order to match with
+    /// `fulfilment_type` type of fill for spot orders, ignored for perp orders
+    pub fn place_and_take(
+        mut self,
+        order: OrderParams,
+        maker_order_id: Option<u32>,
+        fulfillment_type: Option<SpotFulfillmentType>,
+    ) -> Self {
+        let accounts = build_accounts(
+            self.program_data,
+            drift::accounts::PlaceAndTake {
+                state: *state_account(),
+                authority: self.authority,
+                user: self.sub_account,
+                user_stats: Wallet::derive_stats_account(&self.sub_account, &constants::PROGRAM_ID),
+            },
+            &[self.account_data.as_ref()],
+            &[],
+            &[],
+        );
+
+        let ix = if order.market_type == MarketType::Perp {
+            Instruction {
+                program_id: constants::PROGRAM_ID,
+                accounts,
+                data: InstructionData::data(&drift::instruction::PlaceAndTakePerpOrder {
+                    params: order,
+                    maker_order_id,
+                }),
+            }
+        } else {
+            Instruction {
+                program_id: constants::PROGRAM_ID,
+                accounts,
+                data: InstructionData::data(&drift::instruction::PlaceAndTakeSpotOrder {
+                    params: order,
+                    maker_order_id,
+                    fulfillment_type,
+                }),
+            }
+        };
+
+        self.ixs.push(ix);
         self
     }
 
